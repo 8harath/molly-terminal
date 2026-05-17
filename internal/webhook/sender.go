@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,6 +50,16 @@ type SendFileResultMsg struct {
 	Content   string
 	MessageID string
 	Err       error
+}
+
+type EditResultMsg struct {
+	MessageID string
+	Content   string
+	Err       error
+}
+
+type apiErrorResponse struct {
+	Error string `json:"error"`
 }
 
 func New(webhookURL, relayURL, apiKey, username, avatarURL string) *Sender {
@@ -116,6 +127,49 @@ func (s *Sender) SendFile(path, channel, content string) (string, error) {
 		return "", fmt.Errorf("relay rejected file (HTTP %d)", resp.StatusCode)
 	}
 	return parseMessageID(resp.Body), nil
+}
+
+func (s *Sender) Edit(messageID, channel, content string) error {
+	if s.relayURL == "" {
+		return fmt.Errorf("message editing requires server.relay_url")
+	}
+	payload := relayPayload{
+		Channel:  channel,
+		Username: s.username,
+		Content:  content,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to encode edit: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPatch, s.relayURL+"/message/"+messageID, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s.apiKey != "" {
+		req.Header.Set("X-API-Key", s.apiKey)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to edit message via relay: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var apiErr apiErrorResponse
+		if err := json.NewDecoder(resp.Body).Decode(&apiErr); err == nil && strings.TrimSpace(apiErr.Error) != "" {
+			return fmt.Errorf("%s (HTTP %d)", apiErr.Error, resp.StatusCode)
+		}
+		return fmt.Errorf("relay rejected edit (HTTP %d)", resp.StatusCode)
+	}
+	return nil
+}
+
+func (s *Sender) EditAsync(messageID, channel, content string) tea.Cmd {
+	return func() tea.Msg {
+		err := s.Edit(messageID, channel, content)
+		return EditResultMsg{MessageID: messageID, Content: content, Err: err}
+	}
 }
 
 func (s *Sender) sendViaRelay(content, channel, replyToID string) (string, error) {

@@ -69,6 +69,7 @@ func main() {
 	registry.Register(commands.NewSnippetCmd())
 	registry.Register(commands.NewLogoutCmd(cfg, configPath))
 	registry.Register(commands.NewClearMentionsCmd())
+	registry.Register(commands.NewEditCmd())
 
 	tui.InitImageProtocol(cfg.UI.ImageProtocol)
 

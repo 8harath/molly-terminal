@@ -421,6 +421,47 @@ func TestViewFitsSmallWindow(t *testing.T) {
 	assertViewFits(t, m.View(), m.width, m.height)
 }
 
+func TestStartEditLastPrefillsInput(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "")
+	m.msgs = []model.Message{
+		{ID: "1", Username: "alice", Content: "a", Channel: "general", Timestamp: base},
+		{ID: "2", Username: "me", Content: "first", Channel: "general", Timestamp: base.Add(time.Minute), Editable: true},
+		{ID: "3", Username: "me", Content: "second", Channel: "general", Timestamp: base.Add(2 * time.Minute), Editable: true},
+	}
+
+	updated, _ := m.startEdit("last")
+	got := updated.(Model)
+	if got.editingMessage == nil {
+		t.Fatal("expected editingMessage to be set")
+	}
+	if got.editingMessage.ID != "3" {
+		t.Fatalf("expected message ID 3, got %q", got.editingMessage.ID)
+	}
+	if got.input.Value() != "second" {
+		t.Fatalf("expected input to be prefilled, got %q", got.input.Value())
+	}
+}
+
+func TestStartEditPickerSelectsOwnMessages(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "")
+	m.msgs = []model.Message{
+		{ID: "1", Username: "alice", Content: "a", Channel: "general", Timestamp: base},
+		{ID: "2", Username: "me", Content: "first", Channel: "general", Timestamp: base.Add(time.Minute), Editable: true},
+		{ID: "3", Username: "bob", Content: "b", Channel: "general", Timestamp: base.Add(2 * time.Minute)},
+	}
+
+	updated, _ := m.startEdit("")
+	got := updated.(Model)
+	if !got.editSelectMode {
+		t.Fatal("expected edit select mode to be enabled")
+	}
+	if got.editSelectIdx != 1 {
+		t.Fatalf("expected selected index 1, got %d", got.editSelectIdx)
+	}
+}
+
 func assertViewFits(t *testing.T, view string, width, height int) {
 	t.Helper()
 

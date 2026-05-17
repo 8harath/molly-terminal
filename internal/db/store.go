@@ -48,6 +48,7 @@ var schema = []string{
 	`CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp)`,
 	`CREATE INDEX IF NOT EXISTS idx_messages_content ON messages(content)`,
 	`ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE messages ADD COLUMN editable INTEGER NOT NULL DEFAULT 0`,
 }
 
 func New(dbPath string) (*Store, error) {
@@ -85,11 +86,29 @@ func New(dbPath string) (*Store, error) {
 func (s *Store) InsertMessage(msg model.Message) error {
 	attJSON := marshalAttachments(msg.Attachments)
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (id, username, content, channel, timestamp, attachments_json) VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.Username, msg.Content, msg.Channel, msg.Timestamp.UTC(), attJSON,
+		`INSERT INTO messages (id, username, content, channel, timestamp, attachments_json, editable) VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   username=excluded.username,
+		   content=excluded.content,
+		   channel=excluded.channel,
+		   timestamp=excluded.timestamp,
+		   attachments_json=excluded.attachments_json,
+		   editable=excluded.editable`,
+		msg.ID, msg.Username, msg.Content, msg.Channel, msg.Timestamp.UTC(), attJSON, boolToInt(msg.Editable),
 	)
 	if err != nil {
 		return fmt.Errorf("inserting message: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateMessage(msg model.Message) error {
+	_, err := s.db.Exec(
+		`UPDATE messages SET content = ?, username = ?, channel = ?, attachments_json = ?, editable = ? WHERE id = ?`,
+		msg.Content, msg.Username, msg.Channel, marshalAttachments(msg.Attachments), boolToInt(msg.Editable), msg.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("updating message: %w", err)
 	}
 	return nil
 }
@@ -99,10 +118,10 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 	var query string
 
 	if before != nil {
-		query = `SELECT id, username, content, channel, timestamp, attachments_json FROM messages WHERE channel = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?`
+		query = `SELECT id, username, content, channel, timestamp, attachments_json, editable FROM messages WHERE channel = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?`
 		args = []interface{}{channel, before.UTC(), limit}
 	} else {
-		query = `SELECT id, username, content, channel, timestamp, attachments_json FROM messages WHERE channel = ? ORDER BY timestamp DESC LIMIT ?`
+		query = `SELECT id, username, content, channel, timestamp, attachments_json, editable FROM messages WHERE channel = ? ORDER BY timestamp DESC LIMIT ?`
 		args = []interface{}{channel, limit}
 	}
 
@@ -116,10 +135,12 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 	for rows.Next() {
 		var m model.Message
 		var attJSON string
-		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON); err != nil {
+		var editable int
+		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON, &editable); err != nil {
 			return nil, fmt.Errorf("scanning message row: %w", err)
 		}
 		m.Attachments = unmarshalAttachments(attJSON)
+		m.Editable = editable == 1
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -131,7 +152,7 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 
 func (s *Store) SearchMessages(query string) ([]model.Message, error) {
 	rows, err := s.db.Query(
-		`SELECT id, username, content, channel, timestamp, attachments_json FROM messages WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 100`,
+		`SELECT id, username, content, channel, timestamp, attachments_json, editable FROM messages WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 100`,
 		"%"+query+"%",
 	)
 	if err != nil {
@@ -143,10 +164,12 @@ func (s *Store) SearchMessages(query string) ([]model.Message, error) {
 	for rows.Next() {
 		var m model.Message
 		var attJSON string
-		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON); err != nil {
+		var editable int
+		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON, &editable); err != nil {
 			return nil, fmt.Errorf("scanning search result row: %w", err)
 		}
 		m.Attachments = unmarshalAttachments(attJSON)
+		m.Editable = editable == 1
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -194,6 +217,13 @@ func (s *Store) GetNotifications() ([]model.Notification, error) {
 func (s *Store) ClearNotifications() error {
 	_, err := s.db.Exec(`DELETE FROM notifications`)
 	return err
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (s *Store) InsertChannel(name string) error {

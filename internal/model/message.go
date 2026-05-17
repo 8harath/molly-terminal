@@ -13,6 +13,7 @@ type Attachment struct {
 }
 
 type Message struct {
+	EventType      string       `json:"type,omitempty"`
 	ID             string       `json:"id"`
 	Username       string       `json:"username"`
 	UserID         string       `json:"user_id,omitempty"`
@@ -23,6 +24,7 @@ type Message struct {
 	ReplyToContent string       `json:"reply_to_content,omitempty"`
 	ReplyToAuthor  string       `json:"reply_to_author,omitempty"`
 	Attachments    []Attachment `json:"attachments,omitempty"`
+	Editable       bool         `json:"editable,omitempty"`
 }
 
 type Channel struct {
