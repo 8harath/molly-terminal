@@ -33,19 +33,19 @@ type StatusChange struct {
 }
 
 type Client struct {
-	url        string
-	username   string
-	channel    string
-	conn       *websocket.Conn
-	connMu     sync.Mutex
-	msgCh      chan model.Message
-	typingCh   chan model.TypingEvent
-	statusCh   chan StatusChange
-	presenceCh chan model.UserPresence
+	url         string
+	username    string
+	channel     string
+	conn        *websocket.Conn
+	connMu      sync.Mutex
+	msgCh       chan model.Message
+	typingCh    chan model.TypingEvent
+	statusCh    chan StatusChange
+	presenceCh  chan model.UserPresence
 	termUsersCh chan []string
-	done       chan struct{}
-	closeOnce  sync.Once
-	log        *log.Logger
+	done        chan struct{}
+	closeOnce   sync.Once
+	log         *log.Logger
 }
 
 func New(url, username, channel string) *Client {
@@ -271,6 +271,7 @@ type relayEvent struct {
 	ReplyToAuthor  string            `json:"reply_to_author"`
 	Users          []string          `json:"users"`
 	Attachments    []relayAttachment `json:"attachments"`
+	Editable       bool              `json:"editable"`
 }
 
 func (c *Client) readLoop() {
@@ -328,11 +329,13 @@ func (c *Client) readLoop() {
 			default:
 			}
 
-		case "message_create":
+		case "message_create", "message_update":
 			ts, _ := time.Parse(time.RFC3339, evt.Timestamp)
 			msg := model.Message{
+				EventType:      evt.Type,
 				ID:             evt.MessageID,
 				Username:       evt.Username,
+				UserID:         evt.UserID,
 				Content:        evt.Content,
 				Channel:        evt.Channel,
 				Timestamp:      ts,
@@ -340,6 +343,7 @@ func (c *Client) readLoop() {
 				ReplyToContent: evt.ReplyToContent,
 				ReplyToAuthor:  evt.ReplyToAuthor,
 				Attachments:    convertAttachments(evt.Attachments),
+				Editable:       evt.Editable,
 			}
 			select {
 			case c.msgCh <- msg:

@@ -3,8 +3,10 @@ package tui
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +50,21 @@ type localHistoryMsg struct {
 	Channel  string
 	Err      error
 }
+
+type GithubActivityEvent struct {
+	Type      string
+	Repo      string
+	Actor     string
+	Title     string
+	Timestamp time.Time
+}
+
+type githubActivityMsg struct {
+	Events []GithubActivityEvent
+	Err    error
+}
+
+type periodicRefreshMsg struct{}
 
 type Model struct {
 	width  int
@@ -98,9 +115,20 @@ type Model struct {
 
 	replySelectMode bool
 	replySelectIdx  int
+	editSelectMode  bool
+	editSelectIdx   int
+	editingMessage  *model.Message
+
+	discordID         string
+	discordUsername   string
+	discordGlobalName string
+	githubRepo        string
+	githubToken       string
+	githubEvents      []GithubActivityEvent
+	githubLastFetch   time.Time
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username string) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string) Model {
 	channels := []string{channel}
 	var notifications []model.Notification
 	if store != nil {
@@ -114,29 +142,32 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 	}
 
 	return Model{
-		client:           client,
-		sender:           sender,
-		store:            store,
-		fetcher:          fetcher,
-		registry:         registry,
-		channel:          channel,
-		username:         username,
-		channels:         channels,
-		available:        make(map[string]struct{}),
-		status:           wsclient.StatusDisconnected,
-		lastSendOk:       true,
-		loadingHistory:   false,
-		historyLoaded:    false,
-		allHistoryLoaded: false,
-		input:            newInput("> "),
-		channelsVisible:  true,
-		usersVisible:     true,
-		notifVisible:     true,
-		notifications:    notifications,
-		typingUsers:      make(map[string]time.Time),
-		sentHashes:       make(map[string]time.Time),
-		presences:        make(map[string]model.UserPresence),
-		log:              log.Default(),
+		client:            client,
+		sender:            sender,
+		store:             store,
+		fetcher:           fetcher,
+		registry:          registry,
+		channel:           channel,
+		username:          username,
+		discordID:         discordID,
+		discordUsername:   discordUsername,
+		discordGlobalName: discordGlobalName,
+		channels:          channels,
+		available:         make(map[string]struct{}),
+		status:            wsclient.StatusDisconnected,
+		lastSendOk:        true,
+		loadingHistory:    false,
+		historyLoaded:     false,
+		allHistoryLoaded:  false,
+		input:             newInput("> "),
+		channelsVisible:   true,
+		usersVisible:      true,
+		notifVisible:      true,
+		notifications:     notifications,
+		typingUsers:       make(map[string]time.Time),
+		sentHashes:        make(map[string]time.Time),
+		presences:         make(map[string]model.UserPresence),
+		log:               log.Default(),
 	}
 }
 
@@ -151,6 +182,8 @@ func (m Model) Init() tea.Cmd {
 		m.loadLocalHistory(m.channel, 100),
 		history.InitialFetch(m.fetcher, m.channel, 100),
 		m.input.CursorBlinkCmd(),
+		periodicRefreshCmd(),
+		m.githubPollCmd(),
 	)
 }
 
@@ -167,10 +200,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wsMsg:
 		m.addChannel(msg.Channel)
 
-		// Check for @mention
+		if msg.EventType == "message_update" {
+			updated := model.Message(msg)
+			if applied := m.applyMessageUpdate(updated); applied != nil {
+				m.users = msgsToUsers(m.msgs)
+				updated = *applied
+			}
+			batch := []tea.Cmd{m.listenMessages(), m.persistMessageUpdate(updated)}
+			return m, tea.Batch(batch...)
+		}
+
+		// Check for @mention — only notify if not from self
 		var notifCmd tea.Cmd
-		if msg.Username != m.username && strings.Contains(
-			strings.ToLower(msg.Content), "@"+strings.ToLower(m.username)) {
+		if !m.isSelfMessage(msg) && containsMentionExact(msg.Content, m.username) {
 			n := model.Notification{
 				Channel:   msg.Channel,
 				Username:  msg.Username,
@@ -189,10 +231,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(batch...)
 		}
-		key := contentHash(msg.Username, msg.Channel, msg.Content)
-		if _, exists := m.sentHashes[key]; exists {
-			delete(m.sentHashes, key)
-			return m, m.listenMessages()
+		// Try dedup with message's username and all known self aliases.
+		if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
+			serverMsg := model.Message(msg)
+			var reconciled bool
+			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
+			if !reconciled {
+				m.msgs = insertSorted(m.msgs, serverMsg)
+			}
+			m.users = msgsToUsers(m.msgs)
+			return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
 		}
 		m.msgs = insertSorted(m.msgs, model.Message(msg))
 		if len(m.msgs) > 1000 {
@@ -323,6 +371,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
+			if msg.MessageID != "" {
+				var updated *model.Message
+				m.msgs, updated = upgradeEchoID(m.msgs, "echo-", msg.MessageID, msg.Content)
+				if updated != nil {
+					updated.Editable = true
+					return m, m.persistMessage(*updated)
+				}
+			}
 		}
 		return m, nil
 
@@ -333,6 +389,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
+			if msg.MessageID != "" {
+				var updated *model.Message
+				m.msgs, updated = upgradeEchoID(m.msgs, "file-echo-", msg.MessageID, msg.Content)
+				if updated != nil {
+					updated.Editable = true
+					return m, m.persistMessage(*updated)
+				}
+			}
+		}
+		return m, nil
+
+	case webhook.EditResultMsg:
+		if msg.Err != nil {
+			m.lastSendOk = false
+			m.sendErr = msg.Err.Error()
+			if m.editingMessage != nil {
+				m.input.SetValue(msg.Content)
+			}
+			return m, nil
+		}
+		m.lastSendOk = true
+		m.sendErr = ""
+		m.editingMessage = nil
+		updated := model.Message{
+			ID:        msg.MessageID,
+			Username:  m.username,
+			Content:   msg.Content,
+			Channel:   m.channel,
+			Timestamp: time.Now(),
+		}
+		if applied := m.applyMessageUpdate(updated); applied != nil {
+			return m, m.persistMessageUpdate(*applied)
 		}
 		return m, nil
 
@@ -444,6 +532,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commands.SendFileMsg:
 		return m.sendFileWithEcho(msg.Path, msg.Content)
 
+	case commands.EditMessageMsg:
+		return m.handleEditCommand(msg)
+
+	case commands.StartEditMsg:
+		return m.startEdit(msg.Target)
+
 	case commands.OpenImageMsg:
 		return m.openImage(msg.Index)
 
@@ -488,6 +582,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return nil
 		}
 
+	case commands.ClearNotificationsMsg:
+		m.notifications = nil
+		m.notifIdx = 0
+		if m.store != nil {
+			go func() { _ = m.store.ClearNotifications() }()
+		}
+		sysMsg := commands.SystemMsg("mentions cleared")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+
+	case periodicRefreshMsg:
+		if m.historyLoaded && len(m.msgs) > 0 {
+			return m, tea.Batch(periodicRefreshCmd(), history.FetchNewerSince(m.fetcher, m.channel, m.msgs[len(m.msgs)-1].Timestamp))
+		}
+		return m, periodicRefreshCmd()
+
+	case githubActivityMsg:
+		if msg.Err == nil {
+			m.githubEvents = msg.Events
+			m.githubLastFetch = time.Now()
+		}
+		return m, m.githubPollCmd()
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -504,24 +622,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle Alt+R or Ctrl+G: enter reply select mode
 	altR := msg.Alt && len(msg.Runes) == 1 && (msg.Runes[0] == 'r' || msg.Runes[0] == 'R')
+	altE := msg.Alt && len(msg.Runes) == 1 && (msg.Runes[0] == 'e' || msg.Runes[0] == 'E')
 	isCtrlG := msg.String() == "ctrl+g"
+	isCtrlE := msg.String() == "ctrl+e"
 	if altR || isCtrlG {
-		if m.replySelectMode {
+		if m.replySelectMode || m.editSelectMode {
 			return m, nil
 		}
-		m.replySelectMode = true
-		m.replySelectIdx = -1
-		// Default to most recent non-system message
-		for i := len(m.msgs) - 1; i >= 0; i-- {
-			if m.msgs[i].Username != "system" {
-				m.replySelectIdx = i
-				break
-			}
+		return m.startReplyPicker()
+	}
+	if altE || isCtrlE {
+		if m.replySelectMode || m.editSelectMode {
+			return m, nil
 		}
-		if m.replySelectIdx >= 0 {
-			m.ensureReplySelectVisible()
-		}
-		return m, nil
+		return m.startEdit("")
 	}
 
 	switch msg.String() {
@@ -543,8 +657,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.replySelectIdx = -1
 			return m, nil
 		}
+		if m.editSelectMode {
+			m.editSelectMode = false
+			m.editSelectIdx = -1
+			return m, nil
+		}
 		if m.replyTo != nil {
 			m.replyTo = nil
+			return m, nil
+		}
+		if m.editingMessage != nil {
+			m.editingMessage = nil
+			m.input.Clear()
 			return m, nil
 		}
 		if m.input.Value() != "" {
@@ -599,6 +723,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveReplySelectUp()
 			return m, nil
 		}
+		if m.editSelectMode {
+			m.moveEditSelectUp()
+			return m, nil
+		}
 		if m.notifFocused {
 			if m.notifIdx > 0 {
 				m.notifIdx--
@@ -614,6 +742,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down":
 		if m.replySelectMode {
 			m.moveReplySelectDown()
+			return m, nil
+		}
+		if m.editSelectMode {
+			m.moveEditSelectDown()
 			return m, nil
 		}
 		if m.notifFocused {
@@ -657,6 +789,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.replySelectMode = false
 			m.replySelectIdx = -1
 			return m, nil
+		}
+		if m.editSelectMode {
+			return m.confirmEditSelection()
 		}
 		// Jump to notification's channel
 		if m.notifFocused && len(m.notifications) > 0 && m.notifIdx < len(m.notifications) {
@@ -743,7 +878,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.replySelectMode {
+	if m.replySelectMode || m.editSelectMode {
 		return m, nil
 	}
 
@@ -777,6 +912,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.editingMessage != nil {
+			target := m.editingMessage.ID
+			return m, m.EditMessage(target, val)
+		}
 		return m.sendWithEcho(val)
 	}
 
@@ -802,12 +941,27 @@ func (m *Model) loadOlderIfNeeded() tea.Cmd {
 	return nil
 }
 
-// onlineUsers returns only terminal-connected users.
+// onlineUsers returns terminal-connected users, always including self.
 func (m Model) onlineUsers() []string {
-	if m.terminalOnline == nil {
-		return []string{}
+	seen := make(map[string]struct{})
+	var users []string
+	addUser := func(u string) {
+		u = m.canonicalUserSuggestion(u)
+		if u == "" {
+			return
+		}
+		key := strings.ToLower(u)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		users = append(users, u)
 	}
-	return m.terminalOnline
+	addUser(m.username)
+	for _, u := range m.terminalOnline {
+		addUser(u)
+	}
+	return users
 }
 
 func (m *Model) moveReplySelectUp() {
@@ -838,6 +992,32 @@ func (m *Model) moveReplySelectDown() {
 	}
 }
 
+func (m *Model) moveEditSelectUp() {
+	if len(m.msgs) == 0 {
+		return
+	}
+	for i := m.editSelectIdx - 1; i >= 0; i-- {
+		if m.isOwnMessage(m.msgs[i]) && m.msgs[i].Username != "system" && !isLocalEchoID(m.msgs[i].ID) {
+			m.editSelectIdx = i
+			m.ensureEditSelectVisible()
+			return
+		}
+	}
+}
+
+func (m *Model) moveEditSelectDown() {
+	if len(m.msgs) == 0 {
+		return
+	}
+	for i := m.editSelectIdx + 1; i < len(m.msgs); i++ {
+		if m.isOwnMessage(m.msgs[i]) && m.msgs[i].Username != "system" && !isLocalEchoID(m.msgs[i].ID) {
+			m.editSelectIdx = i
+			m.ensureEditSelectVisible()
+			return
+		}
+	}
+}
+
 func (m *Model) ensureReplySelectVisible() {
 	if len(m.msgs) == 0 {
 		return
@@ -852,6 +1032,29 @@ func (m *Model) ensureReplySelectVisible() {
 		chatH = 1
 	}
 	m.scrollOffset = clampInt(fromBottom-chatH/2, 0, total-1)
+}
+
+func (m *Model) ensureEditSelectVisible() {
+	if len(m.msgs) == 0 {
+		return
+	}
+	total := len(m.msgs)
+	fromBottom := total - 1 - m.editSelectIdx
+	if fromBottom < 0 {
+		fromBottom = 0
+	}
+	chatH := m.chatHeight()
+	if chatH < 1 {
+		chatH = 1
+	}
+	m.scrollOffset = clampInt(fromBottom-chatH/2, 0, total-1)
+}
+
+func (m Model) activeSelectedIndex() int {
+	if m.editSelectMode {
+		return m.editSelectIdx
+	}
+	return m.replySelectIdx
 }
 
 func (m *Model) maybeAutoComplete() {
@@ -883,19 +1086,45 @@ func (m *Model) maybeAutoComplete() {
 func (m Model) allKnownUsers() []string {
 	seen := make(map[string]struct{})
 	var users []string
-	for _, u := range m.onlineUsers() {
-		if _, ok := seen[u]; !ok {
-			seen[u] = struct{}{}
-			users = append(users, u)
+	addUser := func(u string) {
+		u = m.canonicalUserSuggestion(u)
+		if u == "" {
+			return
 		}
+		key := strings.ToLower(u)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		users = append(users, u)
+	}
+	for _, u := range m.onlineUsers() {
+		addUser(u)
 	}
 	for _, u := range m.users {
-		if _, ok := seen[u]; !ok {
-			seen[u] = struct{}{}
-			users = append(users, u)
-		}
+		addUser(u)
 	}
 	return users
+}
+
+func (m Model) canonicalUserSuggestion(username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	canonical := m.username
+	if canonical == "" {
+		canonical = m.discordUsername
+	}
+	if canonical == "" {
+		return username
+	}
+	if strings.EqualFold(username, m.username) ||
+		strings.EqualFold(username, m.discordUsername) ||
+		strings.EqualFold(username, m.discordGlobalName) {
+		return canonical
+	}
+	return username
 }
 
 func fitToSize(content string, width, height int) string {
@@ -1017,6 +1246,7 @@ func (m Model) renderStatusBar() string {
 			shortcutFileStyle().Render("/file attach") + "  " +
 			shortcutSearchStyle().Render("/search") + "  " +
 			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
+			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
 			shortcutSelectStyle().Render("ctrl+g select") + "  " +
 			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
 			shortcutChStyle().Render("ctrl+b ch") + "  " +
@@ -1026,6 +1256,7 @@ func (m Model) renderStatusBar() string {
 		right = shortcutScrollStyle().Render(" ↑↓ scroll") + "  " +
 			shortcutFileStyle().Render("/file") + "  " +
 			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
+			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
 			shortcutSelectStyle().Render("ctrl+g select") + "  " +
 			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
 			shortcutChStyle().Render("ctrl+b ch") + "  " +
@@ -1033,6 +1264,7 @@ func (m Model) renderStatusBar() string {
 			shortcutQuitStyle().Render("ctrl+c quit") + " "
 	} else if m.width >= 80 {
 		right = shortcutReplyStyle().Render("ctrl+r reply") + "  " +
+			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
 			shortcutSelectStyle().Render("ctrl+g select") + "  " +
 			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
 			shortcutChStyle().Render("ctrl+b ch") + "  " +
@@ -1121,6 +1353,12 @@ func (m Model) renderRightSidebar(width, height int) string {
 	if width < 10 {
 		return ""
 	}
+
+	githubHeight := 0
+	if m.githubRepo != "" && len(m.githubEvents) > 0 {
+		githubHeight = clampInt(len(m.githubEvents)+3, 5, height/4)
+	}
+
 	usersHeight := 0
 	if m.usersVisible {
 		usersHeight = clampInt(len(m.onlineUsers())+4, 7, height/3)
@@ -1128,20 +1366,65 @@ func (m Model) renderRightSidebar(width, height int) string {
 			usersHeight = 7
 		}
 	}
-	notificationsHeight := height - usersHeight
+
+	notificationsHeight := height - usersHeight - githubHeight
 	if notificationsHeight < 8 {
 		notificationsHeight = 8
 		if usersHeight > 0 {
-			usersHeight = height - notificationsHeight
+			usersHeight = height - notificationsHeight - githubHeight
+			if usersHeight < 0 {
+				usersHeight = 0
+			}
 		}
 	}
 
-	if usersHeight <= 0 {
-		return m.renderNotifications(width, height)
+	var panels []string
+	if usersHeight > 0 {
+		panels = append(panels, m.renderUsers(width, usersHeight))
 	}
-	usersPanel := m.renderUsers(width, usersHeight)
+	if githubHeight > 0 {
+		panels = append(panels, m.renderGithubActivity(width, githubHeight))
+	}
 	notificationsPanel := m.renderNotifications(width, notificationsHeight)
-	return fitToSize(lipgloss.JoinVertical(lipgloss.Left, usersPanel, notificationsPanel), width, height)
+	panels = append(panels, notificationsPanel)
+
+	if len(panels) == 1 {
+		return panels[0]
+	}
+	return fitToSize(lipgloss.JoinVertical(lipgloss.Left, panels...), width, height)
+}
+
+func (m Model) renderGithubActivity(width, height int) string {
+	if width < 10 || len(m.githubEvents) == 0 {
+		return ""
+	}
+	title := panelTitleStyle().Render(fmt.Sprintf(" GitHub: %s ", m.githubRepo))
+	var items []string
+	for _, ev := range m.githubEvents {
+		ts := ev.Timestamp.Local().Format("01-02 15:04")
+		evType := strings.TrimSuffix(ev.Type, "Event")
+		line := fmt.Sprintf("%s %s @%s", ts, evType, ev.Actor)
+		items = append(items, lipgloss.NewStyle().Foreground(themeDim).PaddingLeft(1).Render(line))
+		if ev.Title != "" {
+			preview := ev.Title
+			maxW := width - 4
+			if maxW < 8 {
+				maxW = 8
+			}
+			if len([]rune(preview)) > maxW {
+				preview = string([]rune(preview)[:maxW]) + "…"
+			}
+			items = append(items, lipgloss.NewStyle().Foreground(themeAccent).PaddingLeft(2).Render(preview))
+		}
+	}
+	content := strings.Join(items, "\n")
+	boxHeight := height - 1
+	if boxHeight < 1 {
+		boxHeight = 1
+	}
+	content = clipLines(content, borderedContentHeight(boxHeight))
+	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
+	return fitToSize(title+"\n"+box, width, height)
 }
 
 func (m Model) renderNotifications(width, height int) string {
@@ -1219,6 +1502,22 @@ func (m Model) renderChatArea(width, height int) string {
 			), width, 1)
 		}
 		replyBarHeight = 1
+	} else if m.editSelectMode {
+		if m.editSelectIdx >= 0 && m.editSelectIdx < len(m.msgs) {
+			sm := m.msgs[m.editSelectIdx]
+			snippet := strings.ReplaceAll(sm.Content, "\n", " ")
+			if len([]rune(snippet)) > width-30 {
+				snippet = string([]rune(snippet)[:width-30]) + "…"
+			}
+			replyBar = fitToSize(replySelectPromptStyle().Width(width).MaxWidth(width).MaxHeight(1).Render(
+				fmt.Sprintf("✎ edit your message: %s  [↑↓ move  enter edit  esc cancel]", snippet),
+			), width, 1)
+		} else {
+			replyBar = fitToSize(replySelectPromptStyle().Width(width).MaxWidth(width).MaxHeight(1).Render(
+				"✎ select one of your messages to edit  [↑↓ move  enter edit  esc cancel]",
+			), width, 1)
+		}
+		replyBarHeight = 1
 	} else if m.replyTo != nil {
 		snippet := strings.ReplaceAll(m.replyTo.Content, "\n", " ")
 		if len([]rune(snippet)) > width-20 {
@@ -1228,12 +1527,21 @@ func (m Model) renderChatArea(width, height int) string {
 			fmt.Sprintf("↩ replying to @%s: %s  [Esc to cancel]", m.replyTo.Username, snippet),
 		), width, 1)
 		replyBarHeight = 1
+	} else if m.editingMessage != nil {
+		snippet := strings.ReplaceAll(m.editingMessage.Content, "\n", " ")
+		if len([]rune(snippet)) > width-28 {
+			snippet = string([]rune(snippet)[:width-28]) + "…"
+		}
+		replyBar = fitToSize(replyBarStyle().Width(width).MaxWidth(width).MaxHeight(1).Render(
+			fmt.Sprintf("✎ editing your message: %s  [Enter save  Esc cancel]", snippet),
+		), width, 1)
+		replyBarHeight = 1
 	}
 
 	// Mention autocomplete suggestions
 	mentionSuggestions := ""
 	mentionsHeight := 0
-	if !m.replySelectMode {
+	if !m.replySelectMode && !m.editSelectMode {
 		_, prefix := m.input.WordAtCursor()
 		if (prefix == "@" || prefix == "#") && len(m.input.completions) > 0 {
 			mentionSuggestions = m.renderMentionSuggestions(width)
@@ -1267,8 +1575,8 @@ func (m Model) renderChatArea(width, height int) string {
 		loading:     m.loadingHistory,
 		allLoaded:   m.allHistoryLoaded,
 		myUsername:  m.username,
-		selectMode:  m.replySelectMode,
-		selectedIdx: m.replySelectIdx,
+		selectMode:  m.replySelectMode || m.editSelectMode,
+		selectedIdx: m.activeSelectedIndex(),
 	}
 	chatContent := vp.View()
 
@@ -1519,7 +1827,7 @@ func (m Model) sendWithEcho(content string) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
-	return m, tea.Batch(m.SendMessage(content, m.channel, replyToID), m.persistMessage(echo))
+	return m, m.SendMessage(content, m.channel, replyToID)
 }
 
 func normalizeSingleLineCodeFence(content string) string {
@@ -1565,8 +1873,208 @@ func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
-	cmds := []tea.Cmd{m.SendFile(path, m.channel, content), m.persistMessage(echo)}
-	return m, tea.Batch(cmds...)
+	return m, m.SendFile(path, m.channel, content)
+}
+
+func (m Model) startReplyPicker() (tea.Model, tea.Cmd) {
+	m.editSelectMode = false
+	m.editSelectIdx = -1
+	m.replySelectMode = true
+	m.replySelectIdx = -1
+	for i := len(m.msgs) - 1; i >= 0; i-- {
+		if m.msgs[i].Username != "system" {
+			m.replySelectIdx = i
+			break
+		}
+	}
+	if m.replySelectIdx >= 0 {
+		m.ensureReplySelectVisible()
+	}
+	return m, nil
+}
+
+func (m Model) startEdit(target string) (tea.Model, tea.Cmd) {
+	m.replyTo = nil
+	m.replySelectMode = false
+	m.replySelectIdx = -1
+	target = strings.TrimSpace(target)
+	if target == "" {
+		m.editingMessage = nil
+		m.editSelectMode = true
+		m.editSelectIdx = m.findMostRecentOwnMessageIndex()
+		if m.editSelectIdx >= 0 {
+			m.ensureEditSelectVisible()
+			return m, nil
+		}
+		sysMsg := commands.SystemMsg("no editable message found in this channel")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	if strings.EqualFold(target, "last") {
+		idx := m.findMostRecentOwnMessageIndex()
+		if idx < 0 {
+			sysMsg := commands.SystemMsg("no editable message found in this channel")
+			m.msgs = append(m.msgs, sysMsg)
+			m.scrollOffset = 0
+			return m, nil
+		}
+		return m.prefillEditFromIndex(idx)
+	}
+	idx := m.findMessageIndex(target)
+	if idx < 0 {
+		sysMsg := commands.SystemMsg("message not found in current channel")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	if !m.isOwnMessage(m.msgs[idx]) {
+		sysMsg := commands.SystemMsg("cannot edit a message from another user")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	return m.prefillEditFromIndex(idx)
+}
+
+func (m Model) handleEditCommand(msg commands.EditMessageMsg) (tea.Model, tea.Cmd) {
+	target := strings.TrimSpace(msg.Target)
+	content := normalizeSingleLineCodeFence(strings.TrimSpace(msg.Content))
+	if target == "" || content == "" {
+		sysMsg := commands.SystemMsg("usage: /edit, /edit last, or /edit <message-id> [text]")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	messageID := target
+	if strings.EqualFold(target, "last") {
+		found := false
+		for i := len(m.msgs) - 1; i >= 0; i-- {
+			if m.msgs[i].Username == "system" || isLocalEchoID(m.msgs[i].ID) {
+				continue
+			}
+			if m.isOwnMessage(m.msgs[i]) {
+				messageID = m.msgs[i].ID
+				found = true
+				break
+			}
+		}
+		if !found {
+			sysMsg := commands.SystemMsg("no editable message found in this channel")
+			m.msgs = append(m.msgs, sysMsg)
+			m.scrollOffset = 0
+			return m, nil
+		}
+	} else if idx := m.findMessageIndex(target); idx >= 0 {
+		if !m.isOwnMessage(m.msgs[idx]) {
+			sysMsg := commands.SystemMsg("cannot edit a message from another user")
+			m.msgs = append(m.msgs, sysMsg)
+			m.scrollOffset = 0
+			return m, nil
+		}
+		if !m.msgs[idx].Editable {
+			sysMsg := commands.SystemMsg("that message is not editable by this relay; send a new message from this client and edit that one")
+			m.msgs = append(m.msgs, sysMsg)
+			m.scrollOffset = 0
+			return m, nil
+		}
+	}
+	return m, m.EditMessage(messageID, content)
+}
+
+func (m Model) confirmEditSelection() (tea.Model, tea.Cmd) {
+	if m.editSelectIdx < 0 || m.editSelectIdx >= len(m.msgs) {
+		m.editSelectMode = false
+		m.editSelectIdx = -1
+		return m, nil
+	}
+	return m.prefillEditFromIndex(m.editSelectIdx)
+}
+
+func (m Model) prefillEditFromIndex(idx int) (tea.Model, tea.Cmd) {
+	msg := m.msgs[idx]
+	if !m.isOwnMessage(msg) {
+		sysMsg := commands.SystemMsg("cannot edit a message from another user")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	if !msg.Editable {
+		sysMsg := commands.SystemMsg("that message is not editable by this relay; send a new message from this client and edit that one")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	m.editSelectMode = false
+	m.editSelectIdx = -1
+	m.editingMessage = &msg
+	m.input.SetValue(msg.Content)
+	m.input.Focus()
+	return m, nil
+}
+
+func (m *Model) applyMessageUpdate(updated model.Message) *model.Message {
+	if updated.ID == "" {
+		return nil
+	}
+	for i := range m.msgs {
+		if m.msgs[i].ID != updated.ID {
+			continue
+		}
+		if updated.Username != "" {
+			m.msgs[i].Username = updated.Username
+		}
+		m.msgs[i].Content = updated.Content
+		if updated.Channel != "" {
+			m.msgs[i].Channel = updated.Channel
+		}
+		if !updated.Timestamp.IsZero() && m.msgs[i].Timestamp.IsZero() {
+			m.msgs[i].Timestamp = updated.Timestamp
+		}
+		if updated.ReplyToID != "" {
+			m.msgs[i].ReplyToID = updated.ReplyToID
+			m.msgs[i].ReplyToContent = updated.ReplyToContent
+			m.msgs[i].ReplyToAuthor = updated.ReplyToAuthor
+		}
+		if updated.Attachments != nil {
+			m.msgs[i].Attachments = updated.Attachments
+		}
+		if m.editingMessage != nil && m.editingMessage.ID == updated.ID {
+			current := m.editingMessage
+			*current = m.msgs[i]
+		}
+		applied := m.msgs[i]
+		return &applied
+	}
+	return nil
+}
+
+func (m Model) findMessageIndex(id string) int {
+	for i := range m.msgs {
+		if m.msgs[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m Model) isOwnMessage(msg model.Message) bool {
+	un := strings.ToLower(msg.Username)
+	return un == strings.ToLower(m.username) ||
+		(m.discordUsername != "" && un == strings.ToLower(m.discordUsername)) ||
+		(m.discordGlobalName != "" && un == strings.ToLower(m.discordGlobalName))
+}
+
+func (m Model) findMostRecentOwnMessageIndex() int {
+	for i := len(m.msgs) - 1; i >= 0; i-- {
+		if m.msgs[i].Username == "system" || isLocalEchoID(m.msgs[i].ID) {
+			continue
+		}
+		if m.isOwnMessage(m.msgs[i]) && m.msgs[i].Editable {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m Model) openImage(index int) (tea.Model, tea.Cmd) {
@@ -1633,12 +2141,29 @@ func (m Model) SendFile(path, channel, content string) tea.Cmd {
 	return m.sender.SendFileAsync(path, channel, content)
 }
 
+func (m Model) EditMessage(messageID, content string) tea.Cmd {
+	if m.sender == nil {
+		return nil
+	}
+	return m.sender.EditAsync(messageID, m.channel, content)
+}
+
 func (m Model) persistMessage(msg model.Message) tea.Cmd {
 	if m.store == nil {
 		return nil
 	}
 	return func() tea.Msg {
 		err := m.store.InsertMessage(msg)
+		return dbWriteResultMsg{Err: err}
+	}
+}
+
+func (m Model) persistMessageUpdate(msg model.Message) tea.Cmd {
+	if m.store == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		err := m.store.UpdateMessage(msg)
 		return dbWriteResultMsg{Err: err}
 	}
 }
@@ -1844,6 +2369,20 @@ func (m *Model) prevChannel() {
 	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
 }
 
+// upgradeEchoID replaces the ID of the most-recent matching echo message with
+// realID. Echoes are intentionally in-memory only; once a real ID is known, this
+// returns the upgraded message so the durable store can persist the server ID.
+func upgradeEchoID(msgs []model.Message, prefix, realID, content string) ([]model.Message, *model.Message) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if strings.HasPrefix(msgs[i].ID, prefix) && (content == "" || msgs[i].Content == content) {
+			msgs[i].ID = realID
+			updated := msgs[i]
+			return msgs, &updated
+		}
+	}
+	return msgs, nil
+}
+
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {
 	for i, existing := range msgs {
 		if existing.ID == m.ID {
@@ -1858,24 +2397,107 @@ func insertSorted(msgs []model.Message, m model.Message) []model.Message {
 }
 
 func mergeMessages(existing, incoming []model.Message) []model.Message {
-	seen := make(map[string]struct{}, len(existing))
-	for _, m := range existing {
+	all := append([]model.Message(nil), existing...)
+	seen := make(map[string]struct{}, len(all)+len(incoming))
+	for _, m := range all {
 		seen[m.ID] = struct{}{}
 	}
 
-	var newMsgs []model.Message
 	for _, m := range incoming {
-		if _, ok := seen[m.ID]; !ok {
-			newMsgs = append(newMsgs, m)
-			seen[m.ID] = struct{}{}
+		if _, ok := seen[m.ID]; ok {
+			for i := range all {
+				if all[i].ID == m.ID {
+					all[i] = mergeMessageFields(all[i], m)
+					break
+				}
+			}
+			continue
 		}
+		if idx := findLocalEchoMatch(all, m); idx >= 0 {
+			delete(seen, all[idx].ID)
+			all[idx] = m
+			seen[m.ID] = struct{}{}
+			continue
+		}
+		all = append(all, m)
+		seen[m.ID] = struct{}{}
 	}
 
-	all := append(existing, newMsgs...)
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].Timestamp.Before(all[j].Timestamp)
 	})
 	return all
+}
+
+func mergeMessageFields(existing, incoming model.Message) model.Message {
+	if incoming.Username != "" {
+		existing.Username = incoming.Username
+	}
+	if incoming.Content != "" || existing.Content == "" {
+		existing.Content = incoming.Content
+	}
+	if incoming.Channel != "" {
+		existing.Channel = incoming.Channel
+	}
+	if existing.Timestamp.IsZero() && !incoming.Timestamp.IsZero() {
+		existing.Timestamp = incoming.Timestamp
+	}
+	if incoming.ReplyToID != "" {
+		existing.ReplyToID = incoming.ReplyToID
+		existing.ReplyToContent = incoming.ReplyToContent
+		existing.ReplyToAuthor = incoming.ReplyToAuthor
+	}
+	if incoming.Attachments != nil {
+		existing.Attachments = incoming.Attachments
+	}
+	if incoming.Editable {
+		existing.Editable = true
+	}
+	return existing
+}
+
+func reconcileLocalEcho(msgs []model.Message, replacement model.Message) ([]model.Message, bool) {
+	if idx := findLocalEchoMatch(msgs, replacement); idx >= 0 {
+		msgs[idx] = replacement
+		sort.Slice(msgs, func(i, j int) bool {
+			return msgs[i].Timestamp.Before(msgs[j].Timestamp)
+		})
+		return msgs, true
+	}
+	return msgs, false
+}
+
+func findLocalEchoMatch(msgs []model.Message, replacement model.Message) int {
+	if isLocalEchoID(replacement.ID) {
+		return -1
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if sameLocalEchoMessage(msgs[i], replacement) {
+			return i
+		}
+	}
+	return -1
+}
+
+func sameLocalEchoMessage(echo, replacement model.Message) bool {
+	if !isLocalEchoID(echo.ID) || isLocalEchoID(replacement.ID) {
+		return false
+	}
+	if echo.Channel != replacement.Channel || echo.Content != replacement.Content || echo.ReplyToID != replacement.ReplyToID {
+		return false
+	}
+	if echo.Timestamp.IsZero() || replacement.Timestamp.IsZero() {
+		return true
+	}
+	delta := echo.Timestamp.Sub(replacement.Timestamp)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= 10*time.Minute
+}
+
+func isLocalEchoID(id string) bool {
+	return strings.HasPrefix(id, "echo-") || strings.HasPrefix(id, "file-echo-")
 }
 
 func mergeChannels(existing, incoming []string) []string {
@@ -1932,4 +2554,163 @@ func contentHash(username, channel, content string) string {
 	h := sha256.New()
 	h.Write([]byte(username + "\x00" + channel + "\x00" + content))
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// isSelfMessage returns true if the incoming wsMsg was sent by the local user.
+func (m *Model) isSelfMessage(msg wsMsg) bool {
+	if m.discordID != "" && msg.UserID != "" {
+		return msg.UserID == m.discordID
+	}
+	un := strings.ToLower(msg.Username)
+	return un == strings.ToLower(m.username) ||
+		(m.discordUsername != "" && un == strings.ToLower(m.discordUsername)) ||
+		(m.discordGlobalName != "" && un == strings.ToLower(m.discordGlobalName))
+}
+
+// deduplicateSentMessage checks sentHashes for the message using the received
+// username and all known self-username aliases.  Returns true if a hash match
+// is found (and removes the hash entry).
+func (m *Model) deduplicateSentMessage(username, channel, content string) bool {
+	key := contentHash(username, channel, content)
+	if _, ok := m.sentHashes[key]; ok {
+		delete(m.sentHashes, key)
+		return true
+	}
+	for _, uname := range []string{m.username, m.discordUsername, m.discordGlobalName} {
+		if uname == "" || strings.EqualFold(uname, username) {
+			continue
+		}
+		key2 := contentHash(uname, channel, content)
+		if _, ok := m.sentHashes[key2]; ok {
+			delete(m.sentHashes, key2)
+			return true
+		}
+	}
+	return false
+}
+
+// containsMentionExact checks whether content contains @username as a whole
+// word (not as a substring of a longer username).
+func containsMentionExact(content, username string) bool {
+	if username == "" {
+		return false
+	}
+	lower := strings.ToLower(content)
+	target := "@" + strings.ToLower(username)
+	i := 0
+	for {
+		idx := strings.Index(lower[i:], target)
+		if idx < 0 {
+			return false
+		}
+		abs := i + idx
+		end := abs + len(target)
+		if end >= len(lower) || !isWordRune(rune(lower[end])) {
+			return true
+		}
+		i = abs + 1
+	}
+}
+
+func isWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+}
+
+// periodicRefreshCmd schedules a periodic history refresh every 30 seconds.
+func periodicRefreshCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return periodicRefreshMsg{}
+	})
+}
+
+// WithGithub sets the GitHub repo and token for the activity panel.
+func (m Model) WithGithub(repo, token string) Model {
+	m.githubRepo = repo
+	m.githubToken = token
+	return m
+}
+
+// githubPollCmd schedules a GitHub activity fetch if a repo is configured.
+func (m Model) githubPollCmd() tea.Cmd {
+	if m.githubRepo == "" {
+		return nil
+	}
+	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
+		return m.fetchGithubActivity()
+	})
+}
+
+// fetchGithubActivity fetches recent events from the GitHub API.
+func (m Model) fetchGithubActivity() githubActivityMsg {
+	if m.githubRepo == "" {
+		return githubActivityMsg{}
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/events", m.githubRepo)
+	req, err := newGithubRequest(url, m.githubToken)
+	if err != nil {
+		return githubActivityMsg{Err: err}
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return githubActivityMsg{Err: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return githubActivityMsg{Err: fmt.Errorf("github API: HTTP %d", resp.StatusCode)}
+	}
+	var raw []struct {
+		Type  string `json:"type"`
+		Actor struct {
+			Login string `json:"login"`
+		} `json:"actor"`
+		Repo struct {
+			Name string `json:"name"`
+		} `json:"repo"`
+		Payload struct {
+			Action  string `json:"action"`
+			Commits []struct {
+				Message string `json:"message"`
+			} `json:"commits"`
+		} `json:"payload"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return githubActivityMsg{Err: err}
+	}
+	events := make([]GithubActivityEvent, 0, len(raw))
+	for i, r := range raw {
+		if i >= 10 {
+			break
+		}
+		ts, _ := time.Parse(time.RFC3339, r.CreatedAt)
+		title := r.Payload.Action
+		if len(r.Payload.Commits) > 0 {
+			title = r.Payload.Commits[0].Message
+			if len(title) > 60 {
+				title = title[:60] + "..."
+			}
+		}
+		events = append(events, GithubActivityEvent{
+			Type:      r.Type,
+			Repo:      r.Repo.Name,
+			Actor:     r.Actor.Login,
+			Title:     title,
+			Timestamp: ts,
+		})
+	}
+	return githubActivityMsg{Events: events}
+}
+
+// newGithubRequest builds an HTTP GET request with optional auth token.
+func newGithubRequest(url, token string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
 }

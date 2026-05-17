@@ -48,7 +48,7 @@ func TestSendSuccess(t *testing.T) {
 	defer server.Close()
 
 	s := New(server.URL, "", "", "arnav", "")
-	err := s.Send("hello from terminal", "general", "")
+	_, err := s.Send("hello from terminal", "general", "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestSendSuccess(t *testing.T) {
 
 func TestSendWithEmptyWebhookURL(t *testing.T) {
 	s := New("", "", "", "arnav", "")
-	err := s.Send("hello", "general", "")
+	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for empty webhook URL")
 	}
@@ -79,7 +79,7 @@ func TestSendHTTPError(t *testing.T) {
 	defer server.Close()
 
 	s := New(server.URL, "", "", "arnav", "")
-	err := s.Send("hello", "general", "")
+	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 403 response")
 	}
@@ -95,7 +95,7 @@ func TestSendBadRequestError(t *testing.T) {
 	defer server.Close()
 
 	s := New(server.URL, "", "", "arnav", "")
-	err := s.Send("hello", "general", "")
+	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 400 response")
 	}
@@ -103,7 +103,7 @@ func TestSendBadRequestError(t *testing.T) {
 
 func TestSendConnectionError(t *testing.T) {
 	s := New("http://127.0.0.1:0", "", "", "arnav", "")
-	err := s.Send("hello", "general", "")
+	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
 	}
@@ -122,7 +122,7 @@ func TestSendTimeout(t *testing.T) {
 	s := New(server.URL, "", "", "arnav", "")
 	s.client.Timeout = 100 * time.Millisecond
 
-	err := s.Send("hello", "general", "")
+	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

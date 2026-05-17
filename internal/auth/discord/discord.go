@@ -199,7 +199,7 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 			return nil, err
 		}
 		if a.Notify != nil {
-			a.Notify(fmt.Sprintf("Authenticated as %s", preferredDisplayName(user)))
+			a.Notify(fmt.Sprintf("Authenticated as %s", preferredTerminalUsername(user)))
 		}
 		return &Session{
 			AccessToken:  token.AccessToken,
@@ -335,14 +335,14 @@ func applyDiscordIdentity(cfg *config.Config, user User) {
 	cfg.General.DiscordUsername = user.Username
 	cfg.General.DiscordGlobalName = user.GlobalName
 	cfg.General.DiscordAvatarURL = avatarURL(user.ID, user.Avatar)
-	cfg.General.Username = preferredDisplayName(user)
+	cfg.General.Username = preferredTerminalUsername(user)
 }
 
-func preferredDisplayName(user User) string {
-	if user.GlobalName != "" {
-		return user.GlobalName
+func preferredTerminalUsername(user User) string {
+	if user.Username != "" {
+		return user.Username
 	}
-	return user.Username
+	return user.GlobalName
 }
 
 func avatarURL(userID, avatarHash string) string {

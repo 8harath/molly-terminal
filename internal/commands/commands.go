@@ -38,6 +38,15 @@ type SendFileMsg struct {
 	Content string
 }
 
+type EditMessageMsg struct {
+	Target  string
+	Content string
+}
+
+type StartEditMsg struct {
+	Target string
+}
+
 type OpenImageMsg struct {
 	Index int
 }

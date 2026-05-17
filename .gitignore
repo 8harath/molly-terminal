@@ -10,3 +10,5 @@ dist/
 *.test
 *.out
 .envrc
+*.rvf
+*.rvf.lock
