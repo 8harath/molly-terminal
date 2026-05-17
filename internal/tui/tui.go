@@ -218,9 +218,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(batch...)
 		}
-		// Try dedup with message's username and all known self aliases
+		// Try dedup with message's username and all known self aliases.
 		if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
-			return m, m.listenMessages()
+			serverMsg := model.Message(msg)
+			var reconciled bool
+			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
+			if !reconciled {
+				m.msgs = insertSorted(m.msgs, serverMsg)
+			}
+			m.users = msgsToUsers(m.msgs)
+			return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
 		}
 		m.msgs = insertSorted(m.msgs, model.Message(msg))
 		if len(m.msgs) > 1000 {
@@ -352,7 +359,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastSendOk = true
 			m.sendErr = ""
 			if msg.MessageID != "" {
-				m.msgs = upgradeEchoID(m.msgs, "echo-", msg.MessageID)
+				var updated *model.Message
+				m.msgs, updated = upgradeEchoID(m.msgs, "echo-", msg.MessageID, msg.Content)
+				if updated != nil {
+					return m, m.persistMessage(*updated)
+				}
 			}
 		}
 		return m, nil
@@ -365,7 +376,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastSendOk = true
 			m.sendErr = ""
 			if msg.MessageID != "" {
-				m.msgs = upgradeEchoID(m.msgs, "file-echo-", msg.MessageID)
+				var updated *model.Message
+				m.msgs, updated = upgradeEchoID(m.msgs, "file-echo-", msg.MessageID, msg.Content)
+				if updated != nil {
+					return m, m.persistMessage(*updated)
+				}
 			}
 		}
 		return m, nil
@@ -1637,7 +1652,7 @@ func (m Model) sendWithEcho(content string) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
-	return m, tea.Batch(m.SendMessage(content, m.channel, replyToID), m.persistMessage(echo))
+	return m, m.SendMessage(content, m.channel, replyToID)
 }
 
 func normalizeSingleLineCodeFence(content string) string {
@@ -1683,8 +1698,7 @@ func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
-	cmds := []tea.Cmd{m.SendFile(path, m.channel, content), m.persistMessage(echo)}
-	return m, tea.Batch(cmds...)
+	return m, m.SendFile(path, m.channel, content)
 }
 
 func (m Model) openImage(index int) (tea.Model, tea.Cmd) {
@@ -1962,17 +1976,18 @@ func (m *Model) prevChannel() {
 	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
 }
 
-// upgradeEchoID replaces the ID of the most-recent echo message (whose ID has
-// the given prefix) with realID so that future mergeMessages calls recognise it
-// by the server-assigned ID and don't add a duplicate.
-func upgradeEchoID(msgs []model.Message, prefix, realID string) []model.Message {
+// upgradeEchoID replaces the ID of the most-recent matching echo message with
+// realID. Echoes are intentionally in-memory only; once a real ID is known, this
+// returns the upgraded message so the durable store can persist the server ID.
+func upgradeEchoID(msgs []model.Message, prefix, realID, content string) ([]model.Message, *model.Message) {
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if strings.HasPrefix(msgs[i].ID, prefix) {
+		if strings.HasPrefix(msgs[i].ID, prefix) && (content == "" || msgs[i].Content == content) {
 			msgs[i].ID = realID
-			return msgs
+			updated := msgs[i]
+			return msgs, &updated
 		}
 	}
-	return msgs
+	return msgs, nil
 }
 
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {
@@ -1989,24 +2004,74 @@ func insertSorted(msgs []model.Message, m model.Message) []model.Message {
 }
 
 func mergeMessages(existing, incoming []model.Message) []model.Message {
-	seen := make(map[string]struct{}, len(existing))
-	for _, m := range existing {
+	all := append([]model.Message(nil), existing...)
+	seen := make(map[string]struct{}, len(all)+len(incoming))
+	for _, m := range all {
 		seen[m.ID] = struct{}{}
 	}
 
-	var newMsgs []model.Message
 	for _, m := range incoming {
-		if _, ok := seen[m.ID]; !ok {
-			newMsgs = append(newMsgs, m)
-			seen[m.ID] = struct{}{}
+		if _, ok := seen[m.ID]; ok {
+			continue
 		}
+		if idx := findLocalEchoMatch(all, m); idx >= 0 {
+			delete(seen, all[idx].ID)
+			all[idx] = m
+			seen[m.ID] = struct{}{}
+			continue
+		}
+		all = append(all, m)
+		seen[m.ID] = struct{}{}
 	}
 
-	all := append(existing, newMsgs...)
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].Timestamp.Before(all[j].Timestamp)
 	})
 	return all
+}
+
+func reconcileLocalEcho(msgs []model.Message, replacement model.Message) ([]model.Message, bool) {
+	if idx := findLocalEchoMatch(msgs, replacement); idx >= 0 {
+		msgs[idx] = replacement
+		sort.Slice(msgs, func(i, j int) bool {
+			return msgs[i].Timestamp.Before(msgs[j].Timestamp)
+		})
+		return msgs, true
+	}
+	return msgs, false
+}
+
+func findLocalEchoMatch(msgs []model.Message, replacement model.Message) int {
+	if isLocalEchoID(replacement.ID) {
+		return -1
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if sameLocalEchoMessage(msgs[i], replacement) {
+			return i
+		}
+	}
+	return -1
+}
+
+func sameLocalEchoMessage(echo, replacement model.Message) bool {
+	if !isLocalEchoID(echo.ID) || isLocalEchoID(replacement.ID) {
+		return false
+	}
+	if echo.Channel != replacement.Channel || echo.Content != replacement.Content || echo.ReplyToID != replacement.ReplyToID {
+		return false
+	}
+	if echo.Timestamp.IsZero() || replacement.Timestamp.IsZero() {
+		return true
+	}
+	delta := echo.Timestamp.Sub(replacement.Timestamp)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= 10*time.Minute
+}
+
+func isLocalEchoID(id string) bool {
+	return strings.HasPrefix(id, "echo-") || strings.HasPrefix(id, "file-echo-")
 }
 
 func mergeChannels(existing, incoming []string) []string {
@@ -2169,12 +2234,18 @@ func (m Model) fetchGithubActivity() githubActivityMsg {
 		return githubActivityMsg{Err: fmt.Errorf("github API: HTTP %d", resp.StatusCode)}
 	}
 	var raw []struct {
-		Type      string `json:"type"`
-		Actor     struct{ Login string `json:"login"` } `json:"actor"`
-		Repo      struct{ Name string `json:"name"` } `json:"repo"`
-		Payload   struct {
+		Type  string `json:"type"`
+		Actor struct {
+			Login string `json:"login"`
+		} `json:"actor"`
+		Repo struct {
+			Name string `json:"name"`
+		} `json:"repo"`
+		Payload struct {
 			Action  string `json:"action"`
-			Commits []struct{ Message string `json:"message"` } `json:"commits"`
+			Commits []struct {
+				Message string `json:"message"`
+			} `json:"commits"`
 		} `json:"payload"`
 		CreatedAt string `json:"created_at"`
 	}

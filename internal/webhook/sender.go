@@ -46,6 +46,7 @@ type SendResultMsg struct {
 
 type SendFileResultMsg struct {
 	Path      string
+	Content   string
 	MessageID string
 	Err       error
 }
@@ -207,6 +208,6 @@ func (s *Sender) SendAsync(content, channel, replyToID string) tea.Cmd {
 func (s *Sender) SendFileAsync(path, channel, content string) tea.Cmd {
 	return func() tea.Msg {
 		msgID, err := s.SendFile(path, channel, content)
-		return SendFileResultMsg{Path: path, MessageID: msgID, Err: err}
+		return SendFileResultMsg{Path: path, Content: content, MessageID: msgID, Err: err}
 	}
 }

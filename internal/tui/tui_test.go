@@ -2,12 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/model"
+	"github.com/ploglabs/molly-terminal/internal/webhook"
 )
 
 func msg(id string, ts time.Time) model.Message {
@@ -209,6 +212,170 @@ func TestMergeMessagesIncomingOlderThanExisting(t *testing.T) {
 	}
 	if result[1].ID != "new" {
 		t.Errorf("expected newest message last, got %q", result[1].ID)
+	}
+}
+
+func TestMergeMessagesReplacesStaleLocalEchoAfterRestart(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	existing := []model.Message{{
+		ID:        "echo-123",
+		Username:  "terminal-user",
+		Content:   "hello from terminal",
+		Channel:   "general",
+		Timestamp: base,
+	}}
+	incoming := []model.Message{{
+		ID:        "discord-123",
+		Username:  "discord-user",
+		Content:   "hello from terminal",
+		Channel:   "general",
+		Timestamp: base.Add(2 * time.Second),
+	}}
+
+	result := mergeMessages(existing, incoming)
+	if len(result) != 1 {
+		t.Fatalf("expected stale echo to be replaced, got %d messages", len(result))
+	}
+	if result[0].ID != "discord-123" {
+		t.Fatalf("expected real server ID after merge, got %q", result[0].ID)
+	}
+}
+
+func TestMergeMessagesKeepsRepeatedMessagesOutsideEchoWindow(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	existing := []model.Message{{
+		ID:        "echo-123",
+		Username:  "me",
+		Content:   "repeatable",
+		Channel:   "general",
+		Timestamp: base,
+	}}
+	incoming := []model.Message{{
+		ID:        "discord-123",
+		Username:  "me",
+		Content:   "repeatable",
+		Channel:   "general",
+		Timestamp: base.Add(30 * time.Minute),
+	}}
+
+	result := mergeMessages(existing, incoming)
+	if len(result) != 2 {
+		t.Fatalf("expected distinct repeated messages to remain, got %d", len(result))
+	}
+}
+
+func TestMergeMessagesKeepsDifferentRealMessagesWithSameContent(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	existing := []model.Message{{
+		ID:        "discord-1",
+		Username:  "me",
+		Content:   "same content",
+		Channel:   "general",
+		Timestamp: base,
+	}}
+	incoming := []model.Message{{
+		ID:        "discord-2",
+		Username:  "me",
+		Content:   "same content",
+		Channel:   "general",
+		Timestamp: base.Add(time.Second),
+	}}
+
+	result := mergeMessages(existing, incoming)
+	if len(result) != 2 {
+		t.Fatalf("expected same-content real messages to remain distinct, got %d", len(result))
+	}
+}
+
+func TestSentWebsocketMessageReplacesLocalEcho(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	m := New(nil, nil, nil, nil, nil, "general", "terminal-user", "", "discord-user", "")
+	m.sentHashes[contentHash("terminal-user", "general", "hello")] = time.Now()
+	m.msgs = []model.Message{{
+		ID:        "echo-123",
+		Username:  "terminal-user",
+		Content:   "hello",
+		Channel:   "general",
+		Timestamp: base,
+	}}
+
+	updatedModel, _ := m.Update(wsMsg{
+		ID:        "discord-123",
+		Username:  "discord-user",
+		Content:   "hello",
+		Channel:   "general",
+		Timestamp: base.Add(time.Second),
+	})
+	updated := updatedModel.(Model)
+	if len(updated.msgs) != 1 {
+		t.Fatalf("expected websocket self-message to replace echo, got %d messages", len(updated.msgs))
+	}
+	if updated.msgs[0].ID != "discord-123" {
+		t.Fatalf("expected real server ID after websocket reconcile, got %q", updated.msgs[0].ID)
+	}
+}
+
+func TestSendResultPersistsOnlyServerID(t *testing.T) {
+	store := openTUITestStore(t)
+	m := New(nil, nil, store, nil, nil, "general", "terminal-user", "", "", "")
+
+	updatedModel, cmd := m.sendWithEcho("hello")
+	if cmd != nil {
+		_ = cmd()
+	}
+	updated := updatedModel.(Model)
+	if len(updated.msgs) != 1 {
+		t.Fatalf("expected one local echo, got %d", len(updated.msgs))
+	}
+	if !strings.HasPrefix(updated.msgs[0].ID, "echo-") {
+		t.Fatalf("expected temporary echo ID before send result, got %q", updated.msgs[0].ID)
+	}
+	assertStoredMessageIDs(t, store, nil)
+
+	updatedModel, cmd = updated.Update(webhook.SendResultMsg{
+		Content:   "hello",
+		MessageID: "discord-123",
+	})
+	if cmd == nil {
+		t.Fatal("expected persistence command for real message ID")
+	}
+	if msg := cmd(); msg != nil {
+		if result, ok := msg.(dbWriteResultMsg); ok && result.Err != nil {
+			t.Fatalf("persisting upgraded message: %v", result.Err)
+		}
+	}
+	updated = updatedModel.(Model)
+	if updated.msgs[0].ID != "discord-123" {
+		t.Fatalf("expected in-memory echo to be upgraded, got %q", updated.msgs[0].ID)
+	}
+	assertStoredMessageIDs(t, store, []string{"discord-123"})
+}
+
+func openTUITestStore(t *testing.T) *db.Store {
+	t.Helper()
+	store, err := db.New(filepath.Join(t.TempDir(), "molly.db"))
+	if err != nil {
+		t.Fatalf("opening test store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	return store
+}
+
+func assertStoredMessageIDs(t *testing.T, store *db.Store, expected []string) {
+	t.Helper()
+	msgs, err := store.GetMessages("general", 10, nil)
+	if err != nil {
+		t.Fatalf("getting stored messages: %v", err)
+	}
+	if len(msgs) != len(expected) {
+		t.Fatalf("expected %d stored messages, got %d: %#v", len(expected), len(msgs), msgs)
+	}
+	for i, id := range expected {
+		if msgs[i].ID != id {
+			t.Fatalf("expected stored ID %q at index %d, got %q", id, i, msgs[i].ID)
+		}
 	}
 }
 
