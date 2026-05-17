@@ -351,6 +351,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
+			if msg.MessageID != "" {
+				m.msgs = upgradeEchoID(m.msgs, "echo-", msg.MessageID)
+			}
 		}
 		return m, nil
 
@@ -361,6 +364,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
+			if msg.MessageID != "" {
+				m.msgs = upgradeEchoID(m.msgs, "file-echo-", msg.MessageID)
+			}
 		}
 		return m, nil
 
@@ -1954,6 +1960,19 @@ func (m *Model) prevChannel() {
 		}
 	}
 	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
+}
+
+// upgradeEchoID replaces the ID of the most-recent echo message (whose ID has
+// the given prefix) with realID so that future mergeMessages calls recognise it
+// by the server-assigned ID and don't add a duplicate.
+func upgradeEchoID(msgs []model.Message, prefix, realID string) []model.Message {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if strings.HasPrefix(msgs[i].ID, prefix) {
+			msgs[i].ID = realID
+			return msgs
+		}
+	}
+	return msgs
 }
 
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {
