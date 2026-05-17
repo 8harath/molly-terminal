@@ -879,15 +879,21 @@ func (m *Model) loadOlderIfNeeded() tea.Cmd {
 func (m Model) onlineUsers() []string {
 	seen := make(map[string]struct{})
 	var users []string
-	if m.username != "" {
-		seen[m.username] = struct{}{}
-		users = append(users, m.username)
-	}
-	for _, u := range m.terminalOnline {
-		if _, ok := seen[u]; !ok && u != "" {
-			seen[u] = struct{}{}
-			users = append(users, u)
+	addUser := func(u string) {
+		u = m.canonicalUserSuggestion(u)
+		if u == "" {
+			return
 		}
+		key := strings.ToLower(u)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		users = append(users, u)
+	}
+	addUser(m.username)
+	for _, u := range m.terminalOnline {
+		addUser(u)
 	}
 	return users
 }
@@ -965,19 +971,45 @@ func (m *Model) maybeAutoComplete() {
 func (m Model) allKnownUsers() []string {
 	seen := make(map[string]struct{})
 	var users []string
-	for _, u := range m.onlineUsers() {
-		if _, ok := seen[u]; !ok {
-			seen[u] = struct{}{}
-			users = append(users, u)
+	addUser := func(u string) {
+		u = m.canonicalUserSuggestion(u)
+		if u == "" {
+			return
 		}
+		key := strings.ToLower(u)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		users = append(users, u)
+	}
+	for _, u := range m.onlineUsers() {
+		addUser(u)
 	}
 	for _, u := range m.users {
-		if _, ok := seen[u]; !ok {
-			seen[u] = struct{}{}
-			users = append(users, u)
-		}
+		addUser(u)
 	}
 	return users
+}
+
+func (m Model) canonicalUserSuggestion(username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	canonical := m.username
+	if canonical == "" {
+		canonical = m.discordUsername
+	}
+	if canonical == "" {
+		return username
+	}
+	if strings.EqualFold(username, m.username) ||
+		strings.EqualFold(username, m.discordUsername) ||
+		strings.EqualFold(username, m.discordGlobalName) {
+		return canonical
+	}
+	return username
 }
 
 func fitToSize(content string, width, height int) string {

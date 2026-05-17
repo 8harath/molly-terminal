@@ -67,6 +67,31 @@ func TestWordAtCursorNoPrefix(t *testing.T) {
 	}
 }
 
+func TestMentionCompletionsCollapseSelfDiscordAliases(t *testing.T) {
+	m := New(nil, nil, nil, nil, nil, "general", "puang59", "657064257552384044", "puang59", "puang")
+	m.terminalOnline = []string{"puang", "Vontrix", "puang59", "arnavop7"}
+	m.users = []string{"puang", "Vontrix", "puang59", "arnavop7"}
+	m.input.SetValue("@")
+
+	m.maybeAutoComplete()
+
+	completions, _ := m.input.CurrentCompletion()
+	got := strings.Join(completions, " ")
+	if got != "@puang59 @Vontrix @arnavop7" {
+		t.Fatalf("expected self aliases collapsed in completions, got %q", got)
+	}
+}
+
+func TestOnlineUsersCollapseSelfDiscordAliases(t *testing.T) {
+	m := New(nil, nil, nil, nil, nil, "general", "puang59", "657064257552384044", "puang59", "puang")
+	m.terminalOnline = []string{"puang", "Vontrix", "puang59", "arnavop7"}
+
+	got := strings.Join(m.onlineUsers(), " ")
+	if got != "puang59 Vontrix arnavop7" {
+		t.Fatalf("expected self aliases collapsed in online users, got %q", got)
+	}
+}
+
 func TestCtrlUClearsInput(t *testing.T) {
 	m := newInput("> ")
 	m.SetValue("hello world")

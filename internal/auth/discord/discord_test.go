@@ -37,7 +37,7 @@ func TestAuthorizationURLIncludesDiscordOAuthFields(t *testing.T) {
 	}
 }
 
-func TestApplyDiscordIdentityUsesGlobalNameFirst(t *testing.T) {
+func TestApplyDiscordIdentityUsesDiscordUsernameOverGlobalName(t *testing.T) {
 	cfg := config.Default()
 
 	applyDiscordIdentity(cfg, User{
@@ -47,10 +47,26 @@ func TestApplyDiscordIdentityUsesGlobalNameFirst(t *testing.T) {
 		Avatar:     "hash",
 	})
 
-	if cfg.General.Username != "Display Name" {
-		t.Fatalf("expected global_name to become username, got %q", cfg.General.Username)
+	if cfg.General.Username != "discorduser" {
+		t.Fatalf("expected discord username to become terminal username, got %q", cfg.General.Username)
+	}
+	if cfg.General.DiscordGlobalName != "Display Name" {
+		t.Fatalf("expected global_name to be preserved as alias, got %q", cfg.General.DiscordGlobalName)
 	}
 	if cfg.General.DiscordAvatarURL == "" {
 		t.Fatal("expected avatar URL to be populated")
+	}
+}
+
+func TestApplyDiscordIdentityFallsBackToGlobalNameWhenUsernameMissing(t *testing.T) {
+	cfg := config.Default()
+
+	applyDiscordIdentity(cfg, User{
+		ID:         "1",
+		GlobalName: "Display Name",
+	})
+
+	if cfg.General.Username != "Display Name" {
+		t.Fatalf("expected global_name fallback, got %q", cfg.General.Username)
 	}
 }
