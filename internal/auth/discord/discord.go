@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/ploglabs/molly-terminal/internal/config"
 )
 
@@ -78,22 +80,21 @@ func EnsureUserConfig(ctx context.Context, cfg *config.Config, configPath string
 	switch {
 	case err == nil:
 		applyDiscordIdentity(cfg, user)
-		return cfg.Save(configPath)
 	case cfg.Auth.Discord.RefreshToken != "":
 		session, refreshErr := auth.Refresh(ctx, cfg.Auth.Discord.RefreshToken)
 		if refreshErr != nil {
 			return fmt.Errorf("refreshing discord token: %w (original fetch error: %v)", refreshErr, err)
 		}
 		applySession(cfg, session)
-		return cfg.Save(configPath)
 	default:
 		session, authErr := auth.Authenticate(ctx)
 		if authErr != nil {
 			return fmt.Errorf("authenticating with discord: %w", authErr)
 		}
 		applySession(cfg, session)
-		return cfg.Save(configPath)
 	}
+
+	return saveConfigMerged(cfg, configPath)
 }
 
 func New(cfg *config.Config) *Authenticator {
@@ -371,4 +372,18 @@ func openBrowser(target string) error {
 		cmd = exec.Command("xdg-open", target)
 	}
 	return cmd.Start()
+}
+
+func saveConfigMerged(cfg *config.Config, configPath string) error {
+	var existing config.Config
+	existingData, err := os.ReadFile(configPath)
+	if err == nil {
+		if _, err := toml.Decode(string(existingData), &existing); err == nil {
+			cfg.Server = existing.Server
+			cfg.UI = existing.UI
+			cfg.Github = existing.Github
+			cfg.General.Channel = existing.General.Channel
+		}
+	}
+	return cfg.Save(configPath)
 }
