@@ -305,14 +305,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.channelsOK = true
 		if len(msg.Channels) == 0 {
+			m.channels = nil
+			m.available = make(map[string]struct{})
+			if m.store != nil {
+				_ = m.store.ReplaceChannels(nil)
+			}
 			return m, nil
 		}
-		m.channels = mergeChannels([]string{m.channel}, msg.Channels)
+		m.channels = mergeChannels(nil, msg.Channels)
 		m.available = channelsToSet(m.channels)
-		for _, ch := range m.channels {
-			if m.store != nil {
-				_ = m.store.InsertChannel(ch)
-			}
+		if m.store != nil {
+			_ = m.store.ReplaceChannels(m.channels)
+		}
+		if _, ok := m.available[m.channel]; !ok {
+			oldChannel := m.channel
+			m.channel = m.channels[0]
+			m.msgs = nil
+			m.scrollOffset = 0
+			m.allHistoryLoaded = false
+			m.historyLoaded = false
+			m.replyTo = nil
+
+			sysMsg := commands.SystemMsg(fmt.Sprintf("switched to #%s", m.channel))
+			m.msgs = append(m.msgs, sysMsg)
+
+			cmds = append(cmds, m.subscribeSwitchCmd(oldChannel, m.channel))
+			cmds = append(cmds, m.loadLocalHistory(m.channel, 100))
+			cmds = append(cmds, history.InitialFetch(m.fetcher, m.channel, 100))
+			return m, tea.Batch(cmds...)
 		}
 		return m, nil
 
@@ -2208,7 +2228,7 @@ func (m *Model) addChannel(channel string) {
 	}
 	m.channels = append(m.channels, channel)
 	sort.Strings(m.channels)
-	if m.store != nil {
+	if m.store != nil && m.channelsOK {
 		_ = m.store.InsertChannel(channel)
 	}
 	if m.channelsOK {
