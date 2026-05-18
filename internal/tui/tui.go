@@ -138,6 +138,8 @@ type Model struct {
 	errorFocused     bool
 	errorScrollIdx   int
 	errorScrollOff   int
+
+	helpVisible bool
 }
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string) Model {
@@ -682,6 +684,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+h":
+		m.helpVisible = !m.helpVisible
+		return m, nil
+
 	case "ctrl+o":
 		m.errorsVisible = !m.errorsVisible
 		if m.errorsVisible {
@@ -717,6 +723,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.helpVisible {
+			m.helpVisible = false
+			return m, nil
+		}
 		if m.errorsVisible && m.errorFocused {
 			m.errorsVisible = false
 			m.errorFocused = false
@@ -883,6 +893,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
+		if m.helpVisible {
+			m.helpVisible = false
+			return m, nil
+		}
 		if m.errorsVisible && m.errorFocused {
 			m.errorsVisible = false
 			m.errorFocused = false
@@ -1328,6 +1342,25 @@ func (m Model) View() string {
 	content = fitToSize(content, m.width, contentHeight)
 	full := lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
 
+	if m.helpVisible {
+		modalW := m.width * 80 / 100
+		modalH := m.height * 80 / 100
+		if modalW < 50 {
+			modalW = 50
+		}
+		if modalW > m.width-6 {
+			modalW = m.width - 6
+		}
+		if modalH < 15 {
+			modalH = 15
+		}
+		if modalH > m.height-4 {
+			modalH = m.height - 4
+		}
+		helpModal := m.renderHelpModal(modalW, modalH)
+		return centerInTerm(helpModal, modalW, modalH, m.width, m.height)
+	}
+
 	if m.errorsVisible {
 		modalW := m.width * 70 / 100
 		modalH := m.height * 70 / 100
@@ -1364,42 +1397,7 @@ func (m Model) renderStatusBar() string {
 	onlineCount := len(m.onlineUsers())
 	left := fmt.Sprintf(" %s  #%s  %d online", connStr, m.channel, onlineCount)
 
-	var right string
-	if m.width >= 130 {
-		right = shortcutScrollStyle().Render(" ↑↓/PgUp scroll") + "  " +
-			shortcutFileStyle().Render("/file attach") + "  " +
-			shortcutSearchStyle().Render("/search") + "  " +
-			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
-			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
-			shortcutSelectStyle().Render("ctrl+g select") + "  " +
-			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
-			shortcutChStyle().Render("ctrl+b ch") + "  " +
-			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
-			shortcutErrorStyle().Render("ctrl+o errors") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	} else if m.width >= 110 {
-		right = shortcutScrollStyle().Render(" ↑↓ scroll") + "  " +
-			shortcutFileStyle().Render("/file") + "  " +
-			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
-			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
-			shortcutSelectStyle().Render("ctrl+g select") + "  " +
-			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
-			shortcutChStyle().Render("ctrl+b ch") + "  " +
-			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
-			shortcutErrorStyle().Render("ctrl+o errors") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	} else if m.width >= 80 {
-		right = shortcutReplyStyle().Render("ctrl+r reply") + "  " +
-			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
-			shortcutSelectStyle().Render("ctrl+g select") + "  " +
-			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
-			shortcutChStyle().Render("ctrl+b ch") + "  " +
-			shortcutErrorStyle().Render("ctrl+o errors") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	} else {
-		right = shortcutErrorStyle().Render("ctrl+o errors") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	}
+	right := lipgloss.NewStyle().Foreground(themeDim).Render("ctrl+h help") + " "
 
 	if !m.lastSendOk && m.sendErr != "" {
 		left = statusErrorStyle().Render(fmt.Sprintf(" ⚠ %s", m.sendErr))
@@ -1668,6 +1666,99 @@ func (m Model) renderErrors(width, height int) string {
 	box := renderBorderedBox(panelStyle(), width, height, boxContent)
 
 	return title + "\n" + box
+}
+
+func (m Model) renderHelpModal(width, height int) string {
+	title := panelTitleStyle().Render(" Help ")
+
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+	innerH := height - 4
+	if innerH < 1 {
+		innerH = 1
+	}
+
+	hintLine := lipgloss.NewStyle().Foreground(themeDim).Render("esc / enter / ctrl+h close")
+
+	var sections []string
+
+	sections = append(sections, m.helpSection("Navigation", innerW, [][2]string{
+		{"↑ / ↓ / PgUp / PgDn", "Scroll messages"},
+		{"ctrl + l", "Jump to latest message"},
+		{"ctrl + b", "Toggle channels sidebar"},
+		{"ctrl + y", "Toggle users sidebar"},
+		{"ctrl + p / ctrl + n", "Previous / next channel"},
+	}))
+
+	sections = append(sections, m.helpSection("Messages", innerW, [][2]string{
+		{"ctrl + r", "Reply to latest message"},
+		{"ctrl + g", "Select message to reply"},
+		{"ctrl + e", "Edit your latest message"},
+		{"alt + r", "Select reply target"},
+		{"alt + e", "Select message to edit"},
+		{"enter", "Send / confirm selection"},
+		{"shift + enter", "New line in message"},
+		{"esc", "Cancel reply / edit / clear input"},
+	}))
+
+	sections = append(sections, m.helpSection("Actions", innerW, [][2]string{
+		{"ctrl + ]", "Toggle mentions panel"},
+		{"ctrl + o", "Toggle errors panel"},
+		{"ctrl + v", "Paste image from clipboard"},
+		{"ctrl + c / ctrl + q", "Quit"},
+		{"ctrl + h", "Toggle this help"},
+	}))
+
+	var cmdLines [][2]string
+	if m.registry != nil {
+		cmds := m.registry.List()
+		sort.Slice(cmds, func(i, j int) bool {
+			return cmds[i].Name() < cmds[j].Name()
+		})
+		for _, c := range cmds {
+			cmdLines = append(cmdLines, [2]string{"/" + c.Name(), c.Description()})
+		}
+	}
+	if len(cmdLines) > 0 {
+		sections = append(sections, m.helpSection("Commands", innerW, cmdLines))
+	}
+
+	content := strings.Join(sections, "\n")
+	content = clipLines(content, innerH)
+	boxContent := hintLine + "\n" + content
+	box := renderBorderedBox(panelStyle(), width, height, boxContent)
+
+	return title + "\n" + box
+}
+
+func (m Model) helpSection(name string, width int, items [][2]string) string {
+	var lines []string
+	lines = append(lines, lipgloss.NewStyle().Foreground(themeAccent).Bold(true).Render(name))
+	keyW := 0
+	for _, item := range items {
+		w := lipgloss.Width(item[0])
+		if w > keyW {
+			keyW = w
+		}
+	}
+	padding := keyW + 4
+	for _, item := range items {
+		key := lipgloss.NewStyle().Foreground(themeCyan).Render(item[0])
+		desc := item[1]
+		avail := width - padding
+		if avail < 10 {
+			avail = 10
+		}
+		descRunes := []rune(desc)
+		if len(descRunes) > avail {
+			desc = string(descRunes[:avail-1]) + "…"
+		}
+		line := key + strings.Repeat(" ", padding-lipgloss.Width(item[0])) + lipgloss.NewStyle().Foreground(themeFg).Render(desc)
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderChatArea(width, height int) string {
