@@ -61,7 +61,6 @@ func main() {
 	registry.Register(commands.NewHistoryCmd())
 	registry.Register(commands.NewSearchCmd(store))
 	registry.Register(commands.NewQuitCmd())
-	registry.Register(commands.NewClearCmd())
 	registry.Register(commands.NewLeaveCmd(store))
 	registry.Register(commands.NewStatusCmd())
 	registry.Register(commands.NewFileCmd())

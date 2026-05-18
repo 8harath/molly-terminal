@@ -506,10 +506,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Batch(cmds...)
 
-	case commands.ClearMessagesMsg:
-		m.clearScreen()
-		return m, nil
-
 	case commands.DeleteChannelMsg:
 		chName := msg.Channel
 		if len(m.channels) <= 1 {
@@ -1035,12 +1031,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.maybeAutoComplete()
 
 	return m, nil
-}
-
-func (m *Model) clearScreen() {
-	m.msgs = nil
-	m.scrollOffset = 0
-	m.unreadCount = 0
 }
 
 func (m *Model) loadOlderIfNeeded() tea.Cmd {
