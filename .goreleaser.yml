@@ -116,8 +116,7 @@ nix:
 
 publishers:
   - name: rpm-repo
-    dir: "{{ .Dist }}"
-    cmd: ./scripts/publish-rpm.sh
+    cmd: ./scripts/publish-rpm.sh dist
     env:
       - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
 
