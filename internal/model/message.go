@@ -29,6 +29,7 @@ type Message struct {
 
 type Channel struct {
 	Name     string    `json:"name"`
+	Type     int       `json:"type,omitempty"`
 	JoinedAt time.Time `json:"joined_at"`
 }
 

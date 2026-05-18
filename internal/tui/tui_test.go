@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ploglabs/molly-terminal/internal/db"
+	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/model"
 	"github.com/ploglabs/molly-terminal/internal/webhook"
 )
@@ -472,5 +473,42 @@ func assertViewFits(t *testing.T, view string, width, height int) {
 		if got := lipgloss.Width(line); got > width {
 			t.Fatalf("line %d exceeds width %d: got %d\n%s", i+1, width, got, line)
 		}
+	}
+}
+
+func TestChannelsResultMsgReplacesStaleSelectedChannel(t *testing.T) {
+	store, err := db.New(filepath.Join(t.TempDir(), "molly.db"))
+	if err != nil {
+		t.Fatalf("db.New: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.InsertChannel("deleted"); err != nil {
+		t.Fatalf("InsertChannel deleted: %v", err)
+	}
+	if err := store.InsertChannel("general"); err != nil {
+		t.Fatalf("InsertChannel general: %v", err)
+	}
+
+	m := New(nil, nil, store, nil, nil, "deleted", "me", "", "", "")
+	updated, cmd := m.Update(history.ChannelsResultMsg{Channels: []string{"general", "dev"}})
+	got := updated.(Model)
+
+	if got.channel != "dev" {
+		t.Fatalf("expected fallback to first synced channel, got %q", got.channel)
+	}
+	if len(got.channels) != 2 || got.channels[0] != "dev" || got.channels[1] != "general" {
+		t.Fatalf("expected synced channels only, got %#v", got.channels)
+	}
+	if cmd == nil {
+		t.Fatal("expected follow-up commands after switching channel")
+	}
+
+	channels, err := store.GetChannels()
+	if err != nil {
+		t.Fatalf("GetChannels: %v", err)
+	}
+	if len(channels) != 2 || channels[0] != "dev" || channels[1] != "general" {
+		t.Fatalf("expected store to contain synced channels only, got %#v", channels)
 	}
 }

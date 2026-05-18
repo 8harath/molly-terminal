@@ -267,6 +267,30 @@ func (s *Store) DeleteChannel(name string) error {
 	return nil
 }
 
+func (s *Store) ReplaceChannels(names []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM channels`); err != nil {
+		return fmt.Errorf("clearing channels: %w", err)
+	}
+
+	now := time.Now().UTC()
+	for _, name := range names {
+		if _, err := tx.Exec(`INSERT INTO channels (name, joined_at) VALUES (?, ?)`, name, now); err != nil {
+			return fmt.Errorf("inserting channel %q: %w", name, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing channel sync: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) UpsertPresence(p model.UserPresence) error {
 	online := 0
 	if p.Online {

@@ -82,14 +82,17 @@ func (f *Fetcher) FetchChannels() ([]string, error) {
 		return nil, fmt.Errorf("relay API returned HTTP %d", resp.StatusCode)
 	}
 
-	var channels []model.Channel
+	var channels []struct {
+		Name string `json:"name"`
+		Type string `json:"type,omitempty"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&channels); err != nil {
 		return nil, fmt.Errorf("decoding channels response: %w", err)
 	}
 
 	names := make([]string, 0, len(channels))
 	for _, ch := range channels {
-		if ch.Name != "" {
+		if ch.Name != "" && isTextChannel(ch.Type) {
 			names = append(names, ch.Name)
 		}
 	}
@@ -170,4 +173,8 @@ func FetchNewerSince(f *Fetcher, channel string, since time.Time) tea.Cmd {
 		return nil
 	}
 	return f.FetchSince(channel, since)
+}
+
+func isTextChannel(channelType string) bool {
+	return channelType == "" || channelType == "text"
 }

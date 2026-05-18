@@ -437,3 +437,30 @@ func TestFetchLargeBatch(t *testing.T) {
 		t.Errorf("expected 100 messages, got %d", len(msgs))
 	}
 }
+
+func TestFetchChannelsFiltersToTextChannels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/channels" {
+			t.Fatalf("expected /api/channels, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]map[string]string{
+			{"name": "general", "type": "text"},
+			{"name": "announcements", "type": "text"},
+			{"name": "voice-lobby", "type": "voice"},
+		})
+	}))
+	defer server.Close()
+
+	f := New(server.URL)
+	channels, err := f.FetchChannels()
+	if err != nil {
+		t.Fatalf("FetchChannels() error: %v", err)
+	}
+	if len(channels) != 2 {
+		t.Fatalf("expected 2 text channels, got %d", len(channels))
+	}
+	if channels[0] != "general" || channels[1] != "announcements" {
+		t.Fatalf("unexpected channels: %#v", channels)
+	}
+}
