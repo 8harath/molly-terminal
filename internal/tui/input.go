@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -19,7 +22,9 @@ func readClipboard() string {
 	case "windows":
 		cmd = exec.Command("powershell", "-command", "Get-Clipboard")
 	default:
-		if _, err := exec.LookPath("xclip"); err == nil {
+		if _, err := exec.LookPath("wl-paste"); err == nil {
+			cmd = exec.Command("wl-paste", "--no-newline")
+		} else if _, err := exec.LookPath("xclip"); err == nil {
 			cmd = exec.Command("xclip", "-selection", "clipboard", "-o")
 		} else if _, err := exec.LookPath("xsel"); err == nil {
 			cmd = exec.Command("xsel", "--clipboard", "--output")
@@ -32,6 +37,71 @@ func readClipboard() string {
 		return ""
 	}
 	return strings.TrimRight(string(out), "\n")
+}
+
+func readClipboardImage() string {
+	var data []byte
+	var err error
+
+	switch runtime.GOOS {
+	case "darwin":
+		tmpFile := filepath.Join(os.TempDir(), "molly-clipboard.png")
+		script := fmt.Sprintf(`
+			try
+				set img to the clipboard as «class PNGf»
+				set f to open for access "%s" with write permission
+				set eof f to 0
+				write img to f
+				close access f
+				return "%s"
+			on error
+				return ""
+			end try
+		`, tmpFile, tmpFile)
+		out, runErr := exec.Command("osascript", "-e", script).Output()
+		if runErr != nil || strings.TrimSpace(string(out)) == "" {
+			return ""
+		}
+		return tmpFile
+
+	case "linux":
+		if _, lookErr := exec.LookPath("wl-paste"); lookErr == nil {
+			data, err = exec.Command("wl-paste", "--type", "image/png").Output()
+		} else if _, lookErr := exec.LookPath("xclip"); lookErr == nil {
+			data, err = exec.Command("xclip", "-selection", "clipboard", "-t", "image/png", "-o").Output()
+		} else {
+			return ""
+		}
+
+	case "windows":
+		script := `
+			Add-Type -AssemblyName System.Windows.Forms
+			$img = [System.Windows.Forms.Clipboard]::GetImage()
+			if ($null -ne $img) {
+				$tmp = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.png'
+				$img.Save($tmp, [System.Drawing.Imaging.ImageFormat]::Png)
+				Write-Output $tmp
+			}
+		`
+		out, runErr := exec.Command("powershell", "-Command", script).Output()
+		if runErr != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+
+	default:
+		return ""
+	}
+
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("molly-clipboard-%d.png", time.Now().UnixNano()))
+	if writeErr := os.WriteFile(tmpFile, data, 0644); writeErr != nil {
+		return ""
+	}
+	return tmpFile
 }
 
 type InputModel struct {

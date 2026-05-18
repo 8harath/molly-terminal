@@ -659,6 +659,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+v":
+		if m.sender != nil && m.channel != "" {
+			if path := readClipboardImage(); path != "" {
+				content := fmt.Sprintf("attached `%s`", filepath.Base(path))
+				return m.sendFileWithEcho(path, content)
+			}
+		}
+
 	case "ctrl+c":
 		if m.client != nil {
 			_ = m.client.Close()
