@@ -246,8 +246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(batch...)
 		}
 		// Try dedup with message's username and all known self aliases.
+		serverMsg := model.Message(msg)
 		if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
-			serverMsg := model.Message(msg)
 			var reconciled bool
 			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
 			if !reconciled {
@@ -255,6 +255,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.users = msgsToUsers(m.msgs)
 			return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
+		}
+		// No sentHash match — still try to reconcile a local echo (e.g. file
+		// messages, which don't register sentHashes).
+		if m.isSelfMessage(msg) {
+			var reconciled bool
+			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
+			if reconciled {
+				m.users = msgsToUsers(m.msgs)
+				return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
+			}
 		}
 		m.msgs = insertSorted(m.msgs, model.Message(msg))
 		if len(m.msgs) > 1000 {
@@ -415,14 +425,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
-			if msg.MessageID != "" {
-				var updated *model.Message
-				m.msgs, updated = upgradeEchoID(m.msgs, "echo-", msg.MessageID, msg.Content)
-				if updated != nil {
-					updated.Editable = true
-					return m, m.persistMessage(*updated)
-				}
-			}
 		}
 		return m, nil
 
@@ -434,14 +436,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
-			if msg.MessageID != "" {
-				var updated *model.Message
-				m.msgs, updated = upgradeEchoID(m.msgs, "file-echo-", msg.MessageID, msg.Content)
-				if updated != nil {
-					updated.Editable = true
-					return m, m.persistMessage(*updated)
-				}
-			}
 		}
 		return m, nil
 
@@ -2100,27 +2094,12 @@ func (m Model) sendWithEcho(content string) (tea.Model, tea.Cmd) {
 	m.sentHashes[key] = time.Now()
 
 	replyToID := ""
-	replyToContent := ""
-	replyToAuthor := ""
 	if m.replyTo != nil {
 		replyToID = m.replyTo.ID
-		replyToContent = m.replyTo.Content
-		replyToAuthor = m.replyTo.Username
 		m.replyTo = nil
 	}
 
-	echo := model.Message{
-		ID:             fmt.Sprintf("echo-%d", time.Now().UnixNano()),
-		Username:       m.username,
-		Content:        content,
-		Channel:        m.channel,
-		Timestamp:      time.Now(),
-		ReplyToID:      replyToID,
-		ReplyToContent: replyToContent,
-		ReplyToAuthor:  replyToAuthor,
-	}
-	m.msgs = insertSorted(m.msgs, echo)
-	m.users = msgsToUsers(m.msgs)
+	// Scroll to bottom on send so the incoming WS confirmation is visible.
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
@@ -2141,35 +2120,8 @@ func normalizeSingleLineCodeFence(content string) string {
 }
 
 func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
-	echo := model.Message{
-		ID:        fmt.Sprintf("file-echo-%d", time.Now().UnixNano()),
-		Username:  m.username,
-		Content:   content,
-		Channel:   m.channel,
-		Timestamp: time.Now(),
-	}
-
-	// Add local attachment for inline rendering
-	if path != "" {
-		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
-			base := filepath.Base(path)
-			ext := strings.ToLower(filepath.Ext(path))
-			contentType := MimeTypeFromExt(ext)
-			echo.Attachments = []model.Attachment{{
-				URL:         path,
-				Filename:    base,
-				ContentType: contentType,
-				Size:        int(info.Size()),
-			}}
-		}
-	}
-
-	m.msgs = insertSorted(m.msgs, echo)
-	m.users = msgsToUsers(m.msgs)
 	m.scrollOffset = 0
 	m.unreadCount = 0
-
 	return m, m.SendFile(path, m.channel, content)
 }
 
@@ -2676,25 +2628,14 @@ func (m *Model) prevChannel() {
 	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
 }
 
-// upgradeEchoID replaces the ID of the most-recent matching echo message with
-// realID. Echoes are intentionally in-memory only; once a real ID is known, this
-// returns the upgraded message so the durable store can persist the server ID.
-func upgradeEchoID(msgs []model.Message, prefix, realID, content string) ([]model.Message, *model.Message) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if strings.HasPrefix(msgs[i].ID, prefix) && (content == "" || msgs[i].Content == content) {
-			msgs[i].ID = realID
-			updated := msgs[i]
-			return msgs, &updated
-		}
-	}
-	return msgs, nil
-}
 
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {
-	for i, existing := range msgs {
+	for _, existing := range msgs {
 		if existing.ID == m.ID {
 			return msgs
 		}
+	}
+	for i, existing := range msgs {
 		if m.Timestamp.Before(existing.Timestamp) {
 			msgs = append(msgs[:i], append([]model.Message{m}, msgs[i:]...)...)
 			return msgs
@@ -2884,7 +2825,7 @@ func (m *Model) deduplicateSentMessage(username, channel, content string) bool {
 		return true
 	}
 	for _, uname := range []string{m.username, m.discordUsername, m.discordGlobalName} {
-		if uname == "" || strings.EqualFold(uname, username) {
+		if uname == "" || uname == username {
 			continue
 		}
 		key2 := contentHash(uname, channel, content)
