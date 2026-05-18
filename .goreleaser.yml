@@ -114,5 +114,10 @@ nix:
     description: "Terminal-native realtime chat client for Discord"
     license: mit
 
-
+publishers:
+  - name: rpm-repo
+    dir: "{{ .Dist }}"
+    cmd: ./scripts/publish-rpm.sh
+    env:
+      - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
 
