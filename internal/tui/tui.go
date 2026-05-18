@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -62,6 +63,11 @@ type GithubActivityEvent struct {
 type githubActivityMsg struct {
 	Events []GithubActivityEvent
 	Err    error
+}
+
+type trackedError struct {
+	Timestamp time.Time
+	Message   string
 }
 
 type periodicRefreshMsg struct{}
@@ -126,6 +132,12 @@ type Model struct {
 	githubToken       string
 	githubEvents      []GithubActivityEvent
 	githubLastFetch   time.Time
+
+	errors           []trackedError
+	errorsVisible    bool
+	errorFocused     bool
+	errorScrollIdx   int
+	errorScrollOff   int
 }
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string) Model {
@@ -167,7 +179,7 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		typingUsers:       make(map[string]time.Time),
 		sentHashes:        make(map[string]time.Time),
 		presences:         make(map[string]model.UserPresence),
-		log:               log.Default(),
+		log:               log.New(io.Discard, "", 0),
 	}
 }
 
@@ -260,8 +272,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wsStatusMsg:
 		m.status = msg.Status
-		if msg.Status == wsclient.StatusConnected && m.channel != "" {
-			return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
+		if msg.Err != nil {
+			m.addError(fmt.Sprintf("connection: %v", msg.Err))
+		}
+		if msg.Status == wsclient.StatusConnected {
+			m.errors = nil
+			if m.channel != "" {
+				return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
+			}
 		}
 		return m, m.listenStatus()
 
@@ -300,6 +318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case history.ChannelsResultMsg:
 		if msg.Err != nil {
 			m.log.Printf("channels: %v", msg.Err)
+			m.addError(fmt.Sprintf("channels: %v", msg.Err))
 			m.channelsOK = true // allow /join even if channels couldn't load
 			return m, nil
 		}
@@ -343,6 +362,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadingHistory = false
 		if msg.Err != nil {
 			m.log.Printf("history: %v", msg.Err)
+			m.addError(fmt.Sprintf("history: %v", msg.Err))
 			return m, nil
 		}
 		if len(msg.Messages) == 0 {
@@ -369,6 +389,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Err != nil {
 			m.log.Printf("local history: %v", msg.Err)
+			m.addError(fmt.Sprintf("local history: %v", msg.Err))
 			return m, nil
 		}
 		if len(m.channels) == 0 {
@@ -388,6 +409,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
+			m.addError(fmt.Sprintf("send: %v", msg.Err))
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
@@ -406,6 +428,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
+			m.addError(fmt.Sprintf("file send: %v", msg.Err))
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
@@ -424,6 +447,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
+			m.addError(fmt.Sprintf("edit: %v", msg.Err))
 			if m.editingMessage != nil {
 				m.input.SetValue(msg.Content)
 			}
@@ -447,6 +471,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dbWriteResultMsg:
 		if msg.Err != nil {
 			m.log.Printf("db: %v", msg.Err)
+			m.addError(fmt.Sprintf("db: %v", msg.Err))
 		}
 		return m, nil
 
@@ -623,6 +648,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err == nil {
 			m.githubEvents = msg.Events
 			m.githubLastFetch = time.Now()
+		} else {
+			m.addError(fmt.Sprintf("github: %v", msg.Err))
 		}
 		return m, m.githubPollCmd()
 
@@ -659,6 +686,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+o":
+		m.errorsVisible = !m.errorsVisible
+		if m.errorsVisible {
+			m.errorFocused = true
+			m.errorScrollIdx = len(m.errors) - 1
+			if m.errorScrollIdx < 0 {
+				m.errorScrollIdx = 0
+			}
+			m.errorScrollOff = 0
+		} else {
+			m.errorFocused = false
+		}
+		return m, nil
+
 	case "ctrl+v":
 		if m.sender != nil && m.channel != "" {
 			if path := readClipboardImage(); path != "" {
@@ -680,6 +721,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.errorsVisible && m.errorFocused {
+			m.errorsVisible = false
+			m.errorFocused = false
+			return m, nil
+		}
 		if m.replySelectMode {
 			m.replySelectMode = false
 			m.replySelectIdx = -1
@@ -713,6 +759,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+l":
+		if m.errorsVisible && m.errorFocused {
+			return m, nil
+		}
 		m.scrollOffset = 0
 		m.unreadCount = 0
 		return m, nil
@@ -747,6 +796,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up":
+		if m.errorsVisible && m.errorFocused {
+			if m.errorScrollIdx < len(m.errors)-1 {
+				m.errorScrollIdx++
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		if m.replySelectMode {
 			m.moveReplySelectUp()
 			return m, nil
@@ -768,6 +824,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadOlderIfNeeded()
 
 	case "down":
+		if m.errorsVisible && m.errorFocused {
+			if m.errorScrollIdx > 0 {
+				m.errorScrollIdx--
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		if m.replySelectMode {
 			m.moveReplySelectDown()
 			return m, nil
@@ -790,6 +853,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "pgup":
+		if m.errorsVisible && m.errorFocused {
+			m.errorScrollIdx += 5
+			if m.errorScrollIdx >= len(m.errors) {
+				m.errorScrollIdx = len(m.errors) - 1
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		m.scrollOffset += m.chatHeight() / 2
 		if m.scrollOffset > len(m.msgs)-1 {
 			m.scrollOffset = len(m.msgs) - 1
@@ -800,6 +871,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadOlderIfNeeded()
 
 	case "pgdown":
+		if m.errorsVisible && m.errorFocused {
+			m.errorScrollIdx -= 5
+			if m.errorScrollIdx < 0 {
+				m.errorScrollIdx = 0
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		m.scrollOffset -= m.chatHeight() / 2
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
@@ -808,6 +887,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
+		if m.errorsVisible && m.errorFocused {
+			m.errorsVisible = false
+			m.errorFocused = false
+			return m, nil
+		}
 		// Confirm reply selection
 		if m.replySelectMode {
 			if m.replySelectIdx >= 0 && m.replySelectIdx < len(m.msgs) && m.msgs[m.replySelectIdx].Username != "system" {
@@ -906,7 +990,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.replySelectMode || m.editSelectMode {
+	if m.replySelectMode || m.editSelectMode || (m.errorsVisible && m.errorFocused) {
 		return m, nil
 	}
 
@@ -930,13 +1014,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
-			cmd, err := m.registry.Execute(cmdName, args)
-			if err != nil {
-				sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
-				m.msgs = append(m.msgs, sysMsg)
-				m.scrollOffset = 0
-				return m, nil
-			}
+		cmd, err := m.registry.Execute(cmdName, args)
+		if err != nil {
+			sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
+			m.msgs = append(m.msgs, sysMsg)
+			m.scrollOffset = 0
+			m.addError(fmt.Sprintf("command /%s: %v", cmdName, err))
+			return m, nil
+		}
 			return m, cmd
 		}
 
@@ -1251,7 +1336,28 @@ func (m Model) View() string {
 	}
 
 	content = fitToSize(content, m.width, contentHeight)
-	return lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
+	full := lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
+
+	if m.errorsVisible {
+		modalW := m.width * 70 / 100
+		modalH := m.height * 70 / 100
+		if modalW < 40 {
+			modalW = 40
+		}
+		if modalW > m.width-6 {
+			modalW = m.width - 6
+		}
+		if modalH < 10 {
+			modalH = 10
+		}
+		if modalH > m.height-4 {
+			modalH = m.height - 4
+		}
+		errorModal := m.renderErrors(modalW, modalH)
+		return centerInTerm(errorModal, modalW, modalH, m.width, m.height)
+	}
+
+	return full
 }
 
 func (m Model) renderStatusBar() string {
@@ -1279,6 +1385,7 @@ func (m Model) renderStatusBar() string {
 			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
 			shortcutChStyle().Render("ctrl+b ch") + "  " +
 			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
+			shortcutErrorStyle().Render("ctrl+o errors") + "  " +
 			shortcutQuitStyle().Render("ctrl+c quit") + " "
 	} else if m.width >= 110 {
 		right = shortcutScrollStyle().Render(" ↑↓ scroll") + "  " +
@@ -1289,6 +1396,7 @@ func (m Model) renderStatusBar() string {
 			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
 			shortcutChStyle().Render("ctrl+b ch") + "  " +
 			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
+			shortcutErrorStyle().Render("ctrl+o errors") + "  " +
 			shortcutQuitStyle().Render("ctrl+c quit") + " "
 	} else if m.width >= 80 {
 		right = shortcutReplyStyle().Render("ctrl+r reply") + "  " +
@@ -1296,9 +1404,11 @@ func (m Model) renderStatusBar() string {
 			shortcutSelectStyle().Render("ctrl+g select") + "  " +
 			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
 			shortcutChStyle().Render("ctrl+b ch") + "  " +
+			shortcutErrorStyle().Render("ctrl+o errors") + "  " +
 			shortcutQuitStyle().Render("ctrl+c quit") + " "
 	} else {
-		right = shortcutQuitStyle().Render("ctrl+c quit") + " "
+		right = shortcutErrorStyle().Render("ctrl+o errors") + "  " +
+			shortcutQuitStyle().Render("ctrl+c quit") + " "
 	}
 
 	if !m.lastSendOk && m.sendErr != "" {
@@ -1490,6 +1600,84 @@ func (m Model) renderNotifications(width, height int) string {
 	content = clipLines(content, borderedContentHeight(boxHeight))
 	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
 	return fitToSize(title+"\n"+box, width, height)
+}
+
+func (m Model) renderErrors(width, height int) string {
+	if len(m.errors) == 0 {
+		boxContent := lipgloss.NewStyle().
+			Foreground(themeDim).
+			Align(lipgloss.Center, lipgloss.Center).
+			Width(width - 4).Height(height - 5).
+			Render("no errors recorded")
+		box := renderBorderedBox(panelStyle(), width, height, boxContent)
+		title := panelTitleStyle().Render(" Errors 0 ")
+		return title + "\n" + box
+	}
+
+	title := panelTitleStyle().Render(fmt.Sprintf(" Errors %d ", len(m.errors)))
+
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+	innerH := height - 4
+	if innerH < 1 {
+		innerH = 1
+	}
+
+	hintLine := lipgloss.NewStyle().Foreground(themeDim).Render("↑↓ pgup/pgdn scroll  esc/enter close  ctrl+o toggle")
+
+	var lines []string
+	lines = append(lines, hintLine)
+
+	total := len(m.errors)
+	start := m.errorScrollIdx - innerH + 2
+	if start < 0 {
+		start = 0
+	}
+	if start >= total {
+		start = maxInt(0, total-1)
+	}
+	end := start + innerH - 1
+	if end > total {
+		end = total
+	}
+
+	for i := start; i < end; i++ {
+		err := m.errors[i]
+		ts := err.Timestamp.Local().Format("01-02 15:04:05")
+		msg := err.Message
+		maxMsgW := innerW - len(ts) - 3
+		if maxMsgW < 10 {
+			maxMsgW = 10
+		}
+		msgRunes := []rune(msg)
+		if len(msgRunes) > maxMsgW {
+			msg = string(msgRunes[:maxMsgW])
+		}
+
+		line := fmt.Sprintf("%s  %s", ts, msg)
+		isSelected := i == m.errorScrollIdx
+		if isSelected {
+			line = lipgloss.NewStyle().Foreground(themeAccent).Render(line)
+		} else {
+			line = lipgloss.NewStyle().Foreground(themeFg).Render(line)
+		}
+		lines = append(lines, line)
+	}
+
+	if end < total {
+		lines = append(lines, lipgloss.NewStyle().Foreground(themeDim).Render(fmt.Sprintf("  + %d more above", total-end)))
+	}
+	if start > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(themeDim).Render(fmt.Sprintf("  + %d more below", start)))
+	}
+
+	content := strings.Join(lines, "\n")
+	boxContent := clipLines(content, innerH)
+	box := renderBorderedBox(panelStyle(), width, height, boxContent)
+
+	return title + "\n" + box
 }
 
 func (m Model) renderChatArea(width, height int) string {
@@ -2297,6 +2485,16 @@ func (m Model) commandCandidates(prefix string) []commands.Command {
 	return candidates
 }
 
+func (m *Model) addError(msg string) {
+	m.errors = append(m.errors, trackedError{
+		Timestamp: time.Now(),
+		Message:   msg,
+	})
+	if len(m.errors) > 100 {
+		m.errors = m.errors[len(m.errors)-100:]
+	}
+}
+
 func (m Model) chatWidth() int {
 	w := m.width
 	if m.channelsVisible {
@@ -2741,4 +2939,40 @@ func newGithubRequest(url, token string) (*http.Request, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return req, nil
+}
+
+// centerInTerm pads content (modalW x modalH) to full terminal dimensions
+// using spaces. Avoids lipgloss.Place ANSI measurement issues.
+func centerInTerm(content string, modalW, modalH, termW, termH int) string {
+	lines := strings.Split(content, "\n")
+
+	leftPad := (termW - modalW) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	topPad := (termH - modalH) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	padding := strings.Repeat(" ", leftPad)
+
+	var result strings.Builder
+	for i := 0; i < topPad; i++ {
+		result.WriteString("\n")
+	}
+	for _, line := range lines {
+		result.WriteString(padding)
+		result.WriteString(line)
+		result.WriteString("\n")
+	}
+	remaining := termH - topPad - len(lines)
+	for i := 0; i < remaining; i++ {
+		result.WriteString("\n")
+	}
+
+	return lipgloss.NewStyle().
+		Width(termW).Height(termH).
+		Background(themeBg).
+		Render(result.String())
 }

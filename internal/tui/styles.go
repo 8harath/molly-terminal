@@ -265,6 +265,10 @@ func shortcutQuitStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(themeErr)
 }
 
+func shortcutErrorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(themeErr)
+}
+
 func autoCompleteItemStyle(highlighted bool) lipgloss.Style {
 	s := lipgloss.NewStyle().Foreground(themeAccentDim)
 	if highlighted {
