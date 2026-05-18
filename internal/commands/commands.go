@@ -21,8 +21,6 @@ type SwitchChannelMsg struct {
 	Channel string
 }
 
-type ClearMessagesMsg struct{}
-
 type TriggerHistoryLoadMsg struct{}
 
 type DeleteChannelMsg struct {

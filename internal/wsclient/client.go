@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"sync"
 	"time"
@@ -59,7 +60,7 @@ func New(url, username, channel string) *Client {
 		presenceCh:  make(chan model.UserPresence, 32),
 		termUsersCh: make(chan []string, 16),
 		done:        make(chan struct{}),
-		log:         log.Default(),
+		log:         log.New(io.Discard, "", 0),
 	}
 }
 

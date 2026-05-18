@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -62,6 +63,11 @@ type GithubActivityEvent struct {
 type githubActivityMsg struct {
 	Events []GithubActivityEvent
 	Err    error
+}
+
+type trackedError struct {
+	Timestamp time.Time
+	Message   string
 }
 
 type periodicRefreshMsg struct{}
@@ -126,6 +132,14 @@ type Model struct {
 	githubToken       string
 	githubEvents      []GithubActivityEvent
 	githubLastFetch   time.Time
+
+	errors           []trackedError
+	errorsVisible    bool
+	errorFocused     bool
+	errorScrollIdx   int
+	errorScrollOff   int
+
+	helpVisible bool
 }
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string) Model {
@@ -167,7 +181,7 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		typingUsers:       make(map[string]time.Time),
 		sentHashes:        make(map[string]time.Time),
 		presences:         make(map[string]model.UserPresence),
-		log:               log.Default(),
+		log:               log.New(io.Discard, "", 0),
 	}
 }
 
@@ -232,8 +246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(batch...)
 		}
 		// Try dedup with message's username and all known self aliases.
+		serverMsg := model.Message(msg)
 		if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
-			serverMsg := model.Message(msg)
 			var reconciled bool
 			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
 			if !reconciled {
@@ -241,6 +255,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.users = msgsToUsers(m.msgs)
 			return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
+		}
+		// No sentHash match — still try to reconcile a local echo (e.g. file
+		// messages, which don't register sentHashes).
+		if m.isSelfMessage(msg) {
+			var reconciled bool
+			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
+			if reconciled {
+				m.users = msgsToUsers(m.msgs)
+				return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
+			}
 		}
 		m.msgs = insertSorted(m.msgs, model.Message(msg))
 		if len(m.msgs) > 1000 {
@@ -260,8 +284,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wsStatusMsg:
 		m.status = msg.Status
-		if msg.Status == wsclient.StatusConnected && m.channel != "" {
-			return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
+		if msg.Err != nil {
+			m.addError(fmt.Sprintf("connection: %v", msg.Err))
+		}
+		if msg.Status == wsclient.StatusConnected {
+			m.errors = nil
+			if m.channel != "" {
+				return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
+			}
 		}
 		return m, m.listenStatus()
 
@@ -300,6 +330,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case history.ChannelsResultMsg:
 		if msg.Err != nil {
 			m.log.Printf("channels: %v", msg.Err)
+			m.addError(fmt.Sprintf("channels: %v", msg.Err))
 			m.channelsOK = true // allow /join even if channels couldn't load
 			return m, nil
 		}
@@ -343,6 +374,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadingHistory = false
 		if msg.Err != nil {
 			m.log.Printf("history: %v", msg.Err)
+			m.addError(fmt.Sprintf("history: %v", msg.Err))
 			return m, nil
 		}
 		if len(msg.Messages) == 0 {
@@ -369,6 +401,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Err != nil {
 			m.log.Printf("local history: %v", msg.Err)
+			m.addError(fmt.Sprintf("local history: %v", msg.Err))
 			return m, nil
 		}
 		if len(m.channels) == 0 {
@@ -388,17 +421,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
+			m.addError(fmt.Sprintf("send: %v", msg.Err))
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
-			if msg.MessageID != "" {
-				var updated *model.Message
-				m.msgs, updated = upgradeEchoID(m.msgs, "echo-", msg.MessageID, msg.Content)
-				if updated != nil {
-					updated.Editable = true
-					return m, m.persistMessage(*updated)
-				}
-			}
 		}
 		return m, nil
 
@@ -406,17 +432,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
+			m.addError(fmt.Sprintf("file send: %v", msg.Err))
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
-			if msg.MessageID != "" {
-				var updated *model.Message
-				m.msgs, updated = upgradeEchoID(m.msgs, "file-echo-", msg.MessageID, msg.Content)
-				if updated != nil {
-					updated.Editable = true
-					return m, m.persistMessage(*updated)
-				}
-			}
 		}
 		return m, nil
 
@@ -424,6 +443,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
+			m.addError(fmt.Sprintf("edit: %v", msg.Err))
 			if m.editingMessage != nil {
 				m.input.SetValue(msg.Content)
 			}
@@ -447,6 +467,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dbWriteResultMsg:
 		if msg.Err != nil {
 			m.log.Printf("db: %v", msg.Err)
+			m.addError(fmt.Sprintf("db: %v", msg.Err))
 		}
 		return m, nil
 
@@ -480,10 +501,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, history.InitialFetch(m.fetcher, msg.Channel, 100))
 
 		return m, tea.Batch(cmds...)
-
-	case commands.ClearMessagesMsg:
-		m.clearScreen()
-		return m, nil
 
 	case commands.DeleteChannelMsg:
 		chName := msg.Channel
@@ -623,6 +640,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err == nil {
 			m.githubEvents = msg.Events
 			m.githubLastFetch = time.Now()
+		} else {
+			m.addError(fmt.Sprintf("github: %v", msg.Err))
 		}
 		return m, m.githubPollCmd()
 
@@ -659,6 +678,24 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+h":
+		m.helpVisible = !m.helpVisible
+		return m, nil
+
+	case "ctrl+o":
+		m.errorsVisible = !m.errorsVisible
+		if m.errorsVisible {
+			m.errorFocused = true
+			m.errorScrollIdx = len(m.errors) - 1
+			if m.errorScrollIdx < 0 {
+				m.errorScrollIdx = 0
+			}
+			m.errorScrollOff = 0
+		} else {
+			m.errorFocused = false
+		}
+		return m, nil
+
 	case "ctrl+v":
 		if m.sender != nil && m.channel != "" {
 			if path := readClipboardImage(); path != "" {
@@ -680,6 +717,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.helpVisible {
+			m.helpVisible = false
+			return m, nil
+		}
+		if m.errorsVisible && m.errorFocused {
+			m.errorsVisible = false
+			m.errorFocused = false
+			return m, nil
+		}
 		if m.replySelectMode {
 			m.replySelectMode = false
 			m.replySelectIdx = -1
@@ -713,6 +759,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+l":
+		if m.errorsVisible && m.errorFocused {
+			return m, nil
+		}
 		m.scrollOffset = 0
 		m.unreadCount = 0
 		return m, nil
@@ -747,6 +796,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up":
+		if m.errorsVisible && m.errorFocused {
+			if m.errorScrollIdx < len(m.errors)-1 {
+				m.errorScrollIdx++
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		if m.replySelectMode {
 			m.moveReplySelectUp()
 			return m, nil
@@ -768,6 +824,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadOlderIfNeeded()
 
 	case "down":
+		if m.errorsVisible && m.errorFocused {
+			if m.errorScrollIdx > 0 {
+				m.errorScrollIdx--
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		if m.replySelectMode {
 			m.moveReplySelectDown()
 			return m, nil
@@ -790,6 +853,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "pgup":
+		if m.errorsVisible && m.errorFocused {
+			m.errorScrollIdx += 5
+			if m.errorScrollIdx >= len(m.errors) {
+				m.errorScrollIdx = len(m.errors) - 1
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		m.scrollOffset += m.chatHeight() / 2
 		if m.scrollOffset > len(m.msgs)-1 {
 			m.scrollOffset = len(m.msgs) - 1
@@ -800,6 +871,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadOlderIfNeeded()
 
 	case "pgdown":
+		if m.errorsVisible && m.errorFocused {
+			m.errorScrollIdx -= 5
+			if m.errorScrollIdx < 0 {
+				m.errorScrollIdx = 0
+			}
+			m.errorScrollOff = 0
+			return m, nil
+		}
 		m.scrollOffset -= m.chatHeight() / 2
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
@@ -808,6 +887,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
+		if m.helpVisible {
+			m.helpVisible = false
+			return m, nil
+		}
+		if m.errorsVisible && m.errorFocused {
+			m.errorsVisible = false
+			m.errorFocused = false
+			return m, nil
+		}
 		// Confirm reply selection
 		if m.replySelectMode {
 			if m.replySelectIdx >= 0 && m.replySelectIdx < len(m.msgs) && m.msgs[m.replySelectIdx].Username != "system" {
@@ -906,7 +994,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.replySelectMode || m.editSelectMode {
+	if m.replySelectMode || m.editSelectMode || (m.errorsVisible && m.errorFocused) {
 		return m, nil
 	}
 
@@ -930,13 +1018,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
-			cmd, err := m.registry.Execute(cmdName, args)
-			if err != nil {
-				sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
-				m.msgs = append(m.msgs, sysMsg)
-				m.scrollOffset = 0
-				return m, nil
-			}
+		cmd, err := m.registry.Execute(cmdName, args)
+		if err != nil {
+			sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
+			m.msgs = append(m.msgs, sysMsg)
+			m.scrollOffset = 0
+			m.addError(fmt.Sprintf("command /%s: %v", cmdName, err))
+			return m, nil
+		}
 			return m, cmd
 		}
 
@@ -950,12 +1039,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.maybeAutoComplete()
 
 	return m, nil
-}
-
-func (m *Model) clearScreen() {
-	m.msgs = nil
-	m.scrollOffset = 0
-	m.unreadCount = 0
 }
 
 func (m *Model) loadOlderIfNeeded() tea.Cmd {
@@ -1251,7 +1334,47 @@ func (m Model) View() string {
 	}
 
 	content = fitToSize(content, m.width, contentHeight)
-	return lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
+	full := lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
+
+	if m.helpVisible {
+		modalW := m.width * 80 / 100
+		modalH := m.height * 80 / 100
+		if modalW < 50 {
+			modalW = 50
+		}
+		if modalW > m.width-6 {
+			modalW = m.width - 6
+		}
+		if modalH < 15 {
+			modalH = 15
+		}
+		if modalH > m.height-4 {
+			modalH = m.height - 4
+		}
+		helpModal := m.renderHelpModal(modalW, modalH)
+		return centerInTerm(helpModal, modalW, modalH, m.width, m.height)
+	}
+
+	if m.errorsVisible {
+		modalW := m.width * 70 / 100
+		modalH := m.height * 70 / 100
+		if modalW < 40 {
+			modalW = 40
+		}
+		if modalW > m.width-6 {
+			modalW = m.width - 6
+		}
+		if modalH < 10 {
+			modalH = 10
+		}
+		if modalH > m.height-4 {
+			modalH = m.height - 4
+		}
+		errorModal := m.renderErrors(modalW, modalH)
+		return centerInTerm(errorModal, modalW, modalH, m.width, m.height)
+	}
+
+	return full
 }
 
 func (m Model) renderStatusBar() string {
@@ -1268,38 +1391,7 @@ func (m Model) renderStatusBar() string {
 	onlineCount := len(m.onlineUsers())
 	left := fmt.Sprintf(" %s  #%s  %d online", connStr, m.channel, onlineCount)
 
-	var right string
-	if m.width >= 130 {
-		right = shortcutScrollStyle().Render(" ↑↓/PgUp scroll") + "  " +
-			shortcutFileStyle().Render("/file attach") + "  " +
-			shortcutSearchStyle().Render("/search") + "  " +
-			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
-			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
-			shortcutSelectStyle().Render("ctrl+g select") + "  " +
-			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
-			shortcutChStyle().Render("ctrl+b ch") + "  " +
-			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	} else if m.width >= 110 {
-		right = shortcutScrollStyle().Render(" ↑↓ scroll") + "  " +
-			shortcutFileStyle().Render("/file") + "  " +
-			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
-			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
-			shortcutSelectStyle().Render("ctrl+g select") + "  " +
-			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
-			shortcutChStyle().Render("ctrl+b ch") + "  " +
-			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	} else if m.width >= 80 {
-		right = shortcutReplyStyle().Render("ctrl+r reply") + "  " +
-			shortcutReplyStyle().Render("ctrl+e edit") + "  " +
-			shortcutSelectStyle().Render("ctrl+g select") + "  " +
-			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
-			shortcutChStyle().Render("ctrl+b ch") + "  " +
-			shortcutQuitStyle().Render("ctrl+c quit") + " "
-	} else {
-		right = shortcutQuitStyle().Render("ctrl+c quit") + " "
-	}
+	right := lipgloss.NewStyle().Foreground(themeDim).Render("ctrl+h help") + " "
 
 	if !m.lastSendOk && m.sendErr != "" {
 		left = statusErrorStyle().Render(fmt.Sprintf(" ⚠ %s", m.sendErr))
@@ -1490,6 +1582,177 @@ func (m Model) renderNotifications(width, height int) string {
 	content = clipLines(content, borderedContentHeight(boxHeight))
 	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
 	return fitToSize(title+"\n"+box, width, height)
+}
+
+func (m Model) renderErrors(width, height int) string {
+	if len(m.errors) == 0 {
+		boxContent := lipgloss.NewStyle().
+			Foreground(themeDim).
+			Align(lipgloss.Center, lipgloss.Center).
+			Width(width - 4).Height(height - 5).
+			Render("no errors recorded")
+		box := renderBorderedBox(panelStyle(), width, height, boxContent)
+		title := panelTitleStyle().Render(" Errors 0 ")
+		return title + "\n" + box
+	}
+
+	title := panelTitleStyle().Render(fmt.Sprintf(" Errors %d ", len(m.errors)))
+
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+	innerH := height - 4
+	if innerH < 1 {
+		innerH = 1
+	}
+
+	hintLine := lipgloss.NewStyle().Foreground(themeDim).Render("↑↓ pgup/pgdn scroll  esc/enter close  ctrl+o toggle")
+
+	var lines []string
+	lines = append(lines, hintLine)
+
+	total := len(m.errors)
+	start := m.errorScrollIdx - innerH + 2
+	if start < 0 {
+		start = 0
+	}
+	if start >= total {
+		start = maxInt(0, total-1)
+	}
+	end := start + innerH - 1
+	if end > total {
+		end = total
+	}
+
+	for i := start; i < end; i++ {
+		err := m.errors[i]
+		ts := err.Timestamp.Local().Format("01-02 15:04:05")
+		msg := err.Message
+		maxMsgW := innerW - len(ts) - 3
+		if maxMsgW < 10 {
+			maxMsgW = 10
+		}
+		msgRunes := []rune(msg)
+		if len(msgRunes) > maxMsgW {
+			msg = string(msgRunes[:maxMsgW])
+		}
+
+		line := fmt.Sprintf("%s  %s", ts, msg)
+		isSelected := i == m.errorScrollIdx
+		if isSelected {
+			line = lipgloss.NewStyle().Foreground(themeAccent).Render(line)
+		} else {
+			line = lipgloss.NewStyle().Foreground(themeFg).Render(line)
+		}
+		lines = append(lines, line)
+	}
+
+	if end < total {
+		lines = append(lines, lipgloss.NewStyle().Foreground(themeDim).Render(fmt.Sprintf("  + %d more above", total-end)))
+	}
+	if start > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(themeDim).Render(fmt.Sprintf("  + %d more below", start)))
+	}
+
+	content := strings.Join(lines, "\n")
+	boxContent := clipLines(content, innerH)
+	box := renderBorderedBox(panelStyle(), width, height, boxContent)
+
+	return title + "\n" + box
+}
+
+func (m Model) renderHelpModal(width, height int) string {
+	title := panelTitleStyle().Render(" Help ")
+
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+	innerH := height - 4
+	if innerH < 1 {
+		innerH = 1
+	}
+
+	hintLine := lipgloss.NewStyle().Foreground(themeDim).Render("esc / enter / ctrl+h close")
+
+	var sections []string
+
+	sections = append(sections, m.helpSection("Navigation", innerW, [][2]string{
+		{"↑ / ↓ / PgUp / PgDn", "Scroll messages"},
+		{"ctrl + l", "Jump to latest message"},
+		{"ctrl + b", "Toggle channels sidebar"},
+		{"ctrl + y", "Toggle users sidebar"},
+		{"ctrl + p / ctrl + n", "Previous / next channel"},
+	}))
+
+	sections = append(sections, m.helpSection("Messages", innerW, [][2]string{
+		{"ctrl + r", "Reply to latest message"},
+		{"ctrl + g", "Select message to reply"},
+		{"ctrl + e", "Edit your latest message"},
+		{"alt + r", "Select reply target"},
+		{"alt + e", "Select message to edit"},
+		{"enter", "Send / confirm selection"},
+		{"shift + enter", "New line in message"},
+		{"esc", "Cancel reply / edit / clear input"},
+	}))
+
+	sections = append(sections, m.helpSection("Actions", innerW, [][2]string{
+		{"ctrl + ]", "Toggle mentions panel"},
+		{"ctrl + o", "Toggle errors panel"},
+		{"ctrl + v", "Paste image from clipboard"},
+		{"ctrl + c / ctrl + q", "Quit"},
+		{"ctrl + h", "Toggle this help"},
+	}))
+
+	var cmdLines [][2]string
+	if m.registry != nil {
+		cmds := m.registry.List()
+		sort.Slice(cmds, func(i, j int) bool {
+			return cmds[i].Name() < cmds[j].Name()
+		})
+		for _, c := range cmds {
+			cmdLines = append(cmdLines, [2]string{"/" + c.Name(), c.Description()})
+		}
+	}
+	if len(cmdLines) > 0 {
+		sections = append(sections, m.helpSection("Commands", innerW, cmdLines))
+	}
+
+	content := strings.Join(sections, "\n")
+	content = clipLines(content, innerH)
+	boxContent := hintLine + "\n" + content
+	box := renderBorderedBox(panelStyle(), width, height, boxContent)
+
+	return title + "\n" + box
+}
+
+func (m Model) helpSection(name string, width int, items [][2]string) string {
+	var lines []string
+	lines = append(lines, lipgloss.NewStyle().Foreground(themeAccent).Bold(true).Render(name))
+	keyW := 0
+	for _, item := range items {
+		w := lipgloss.Width(item[0])
+		if w > keyW {
+			keyW = w
+		}
+	}
+	padding := keyW + 4
+	for _, item := range items {
+		key := lipgloss.NewStyle().Foreground(themeCyan).Render(item[0])
+		desc := item[1]
+		avail := width - padding
+		if avail < 10 {
+			avail = 10
+		}
+		descRunes := []rune(desc)
+		if len(descRunes) > avail {
+			desc = string(descRunes[:avail-1]) + "…"
+		}
+		line := key + strings.Repeat(" ", padding-lipgloss.Width(item[0])) + lipgloss.NewStyle().Foreground(themeFg).Render(desc)
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderChatArea(width, height int) string {
@@ -1831,27 +2094,12 @@ func (m Model) sendWithEcho(content string) (tea.Model, tea.Cmd) {
 	m.sentHashes[key] = time.Now()
 
 	replyToID := ""
-	replyToContent := ""
-	replyToAuthor := ""
 	if m.replyTo != nil {
 		replyToID = m.replyTo.ID
-		replyToContent = m.replyTo.Content
-		replyToAuthor = m.replyTo.Username
 		m.replyTo = nil
 	}
 
-	echo := model.Message{
-		ID:             fmt.Sprintf("echo-%d", time.Now().UnixNano()),
-		Username:       m.username,
-		Content:        content,
-		Channel:        m.channel,
-		Timestamp:      time.Now(),
-		ReplyToID:      replyToID,
-		ReplyToContent: replyToContent,
-		ReplyToAuthor:  replyToAuthor,
-	}
-	m.msgs = insertSorted(m.msgs, echo)
-	m.users = msgsToUsers(m.msgs)
+	// Scroll to bottom on send so the incoming WS confirmation is visible.
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
@@ -1872,35 +2120,8 @@ func normalizeSingleLineCodeFence(content string) string {
 }
 
 func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
-	echo := model.Message{
-		ID:        fmt.Sprintf("file-echo-%d", time.Now().UnixNano()),
-		Username:  m.username,
-		Content:   content,
-		Channel:   m.channel,
-		Timestamp: time.Now(),
-	}
-
-	// Add local attachment for inline rendering
-	if path != "" {
-		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
-			base := filepath.Base(path)
-			ext := strings.ToLower(filepath.Ext(path))
-			contentType := MimeTypeFromExt(ext)
-			echo.Attachments = []model.Attachment{{
-				URL:         path,
-				Filename:    base,
-				ContentType: contentType,
-				Size:        int(info.Size()),
-			}}
-		}
-	}
-
-	m.msgs = insertSorted(m.msgs, echo)
-	m.users = msgsToUsers(m.msgs)
 	m.scrollOffset = 0
 	m.unreadCount = 0
-
 	return m, m.SendFile(path, m.channel, content)
 }
 
@@ -2297,6 +2518,16 @@ func (m Model) commandCandidates(prefix string) []commands.Command {
 	return candidates
 }
 
+func (m *Model) addError(msg string) {
+	m.errors = append(m.errors, trackedError{
+		Timestamp: time.Now(),
+		Message:   msg,
+	})
+	if len(m.errors) > 100 {
+		m.errors = m.errors[len(m.errors)-100:]
+	}
+}
+
 func (m Model) chatWidth() int {
 	w := m.width
 	if m.channelsVisible {
@@ -2397,25 +2628,14 @@ func (m *Model) prevChannel() {
 	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
 }
 
-// upgradeEchoID replaces the ID of the most-recent matching echo message with
-// realID. Echoes are intentionally in-memory only; once a real ID is known, this
-// returns the upgraded message so the durable store can persist the server ID.
-func upgradeEchoID(msgs []model.Message, prefix, realID, content string) ([]model.Message, *model.Message) {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if strings.HasPrefix(msgs[i].ID, prefix) && (content == "" || msgs[i].Content == content) {
-			msgs[i].ID = realID
-			updated := msgs[i]
-			return msgs, &updated
-		}
-	}
-	return msgs, nil
-}
 
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {
-	for i, existing := range msgs {
+	for _, existing := range msgs {
 		if existing.ID == m.ID {
 			return msgs
 		}
+	}
+	for i, existing := range msgs {
 		if m.Timestamp.Before(existing.Timestamp) {
 			msgs = append(msgs[:i], append([]model.Message{m}, msgs[i:]...)...)
 			return msgs
@@ -2605,7 +2825,7 @@ func (m *Model) deduplicateSentMessage(username, channel, content string) bool {
 		return true
 	}
 	for _, uname := range []string{m.username, m.discordUsername, m.discordGlobalName} {
-		if uname == "" || strings.EqualFold(uname, username) {
+		if uname == "" || uname == username {
 			continue
 		}
 		key2 := contentHash(uname, channel, content)
@@ -2741,4 +2961,40 @@ func newGithubRequest(url, token string) (*http.Request, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return req, nil
+}
+
+// centerInTerm pads content (modalW x modalH) to full terminal dimensions
+// using spaces. Avoids lipgloss.Place ANSI measurement issues.
+func centerInTerm(content string, modalW, modalH, termW, termH int) string {
+	lines := strings.Split(content, "\n")
+
+	leftPad := (termW - modalW) / 2
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	topPad := (termH - modalH) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	padding := strings.Repeat(" ", leftPad)
+
+	var result strings.Builder
+	for i := 0; i < topPad; i++ {
+		result.WriteString("\n")
+	}
+	for _, line := range lines {
+		result.WriteString(padding)
+		result.WriteString(line)
+		result.WriteString("\n")
+	}
+	remaining := termH - topPad - len(lines)
+	for i := 0; i < remaining; i++ {
+		result.WriteString("\n")
+	}
+
+	return lipgloss.NewStyle().
+		Width(termW).Height(termH).
+		Background(themeBg).
+		Render(result.String())
 }

@@ -512,3 +512,118 @@ func TestChannelsResultMsgReplacesStaleSelectedChannel(t *testing.T) {
 		t.Fatalf("expected store to contain synced channels only, got %#v", channels)
 	}
 }
+
+// Bug 1 regression: insertSorted must not insert a duplicate when the incoming
+// message has an earlier timestamp than messages that appear after the
+// existing entry in the list.
+func TestInsertSortedNoDuplicateWhenTimestampEarlierThanLaterMessages(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	// m.msgs after upgradeEchoID: realID sits at T+2, another message at T+3.
+	msgs := []model.Message{
+		{ID: "other", Username: "alice", Content: "hi", Channel: "general", Timestamp: base.Add(time.Second)},
+		{ID: "real-id", Username: "me", Content: "hello", Channel: "general", Timestamp: base.Add(2 * time.Second)},
+		{ID: "later", Username: "alice", Content: "bye", Channel: "general", Timestamp: base.Add(3 * time.Second)},
+	}
+	// Relay broadcast arrives with second-truncated timestamp: T+0 (earlier than "other").
+	incoming := model.Message{ID: "real-id", Username: "me", Content: "hello", Channel: "general", Timestamp: base}
+
+	result := insertSorted(msgs, incoming)
+	if len(result) != 3 {
+		t.Fatalf("insertSorted duplicated message: got %d entries (want 3)", len(result))
+	}
+	count := 0
+	for _, m := range result {
+		if m.ID == "real-id" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 entry with ID 'real-id', got %d", count)
+	}
+}
+
+// Bug 2 regression: file echoes have no sentHash; wsMsg from self must still
+// reconcile (replace) the file-echo rather than inserting a duplicate.
+func TestFileEchoReconciledBySelfMessagePath(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	m := New(nil, nil, nil, nil, nil, "general", "terminal-user", "discord-id-123", "discord-user", "Discord User")
+
+	// Simulate what sendFileWithEcho does: echo added, no sentHash registered.
+	m.msgs = []model.Message{{
+		ID:        "file-echo-999",
+		Username:  "terminal-user",
+		Content:   "here is a file",
+		Channel:   "general",
+		Timestamp: base,
+	}}
+	// sentHashes is intentionally empty (no hash for file echoes).
+
+	// Relay broadcasts back with real ID and same username.
+	updatedModel, _ := m.Update(wsMsg{
+		ID:        "discord-file-456",
+		Username:  "terminal-user",
+		UserID:    "discord-id-123",
+		Content:   "here is a file",
+		Channel:   "general",
+		Timestamp: base.Add(time.Second),
+	})
+	updated := updatedModel.(Model)
+	if len(updated.msgs) != 1 {
+		t.Fatalf("file echo not reconciled: got %d messages (want 1)", len(updated.msgs))
+	}
+	if updated.msgs[0].ID != "discord-file-456" {
+		t.Fatalf("expected real server ID after file echo reconcile, got %q", updated.msgs[0].ID)
+	}
+}
+
+// Bug 3 regression: deduplicateSentMessage must not skip an alias when it
+// matches the incoming username only case-insensitively (alias stored with
+// exact case that differs from incoming).
+func TestDeduplicateSentMessageCaseMismatch(t *testing.T) {
+	m := New(nil, nil, nil, nil, nil, "general", "Alice", "", "", "")
+	m.sentHashes[contentHash("Alice", "general", "hello")] = time.Now()
+
+	// Relay broadcasts with lowercase username — EqualFold would skip "Alice".
+	got := m.deduplicateSentMessage("alice", "general", "hello")
+	if !got {
+		t.Fatal("deduplicateSentMessage returned false for case-mismatched username (want true)")
+	}
+	if len(m.sentHashes) != 0 {
+		t.Fatal("expected sentHashes entry to be removed after dedup")
+	}
+}
+
+// Bug 1+3 combined: upgradeEchoID already ran, wsMsg arrives with
+// case-different username — must not duplicate.
+func TestNoDuplicateWhenUpgradedEchoAndCaseMismatch(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	m := New(nil, nil, nil, nil, nil, "general", "Alice", "", "", "")
+	m.sentHashes[contentHash("Alice", "general", "hello")] = time.Now()
+
+	// upgradeEchoID already ran: echo-XXX → real-id.
+	m.msgs = []model.Message{
+		{ID: "other", Username: "bob", Content: "hi", Channel: "general", Timestamp: base.Add(time.Second)},
+		{ID: "real-id", Username: "Alice", Content: "hello", Channel: "general", Timestamp: base.Add(2 * time.Second)},
+	}
+
+	updatedModel, _ := m.Update(wsMsg{
+		ID:        "real-id",
+		Username:  "alice",
+		Content:   "hello",
+		Channel:   "general",
+		Timestamp: base, // earlier than "other" — triggers old insertSorted bug
+	})
+	updated := updatedModel.(Model)
+	if len(updated.msgs) != 2 {
+		t.Fatalf("got %d messages after wsMsg (want 2)", len(updated.msgs))
+	}
+	count := 0
+	for _, msg := range updated.msgs {
+		if msg.ID == "real-id" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 entry with ID 'real-id', got %d", count)
+	}
+}
