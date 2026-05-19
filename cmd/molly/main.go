@@ -22,6 +22,52 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
+// ANSI helpers
+const (
+	cReset  = "\033[0m"
+	cBold   = "\033[1m"
+	cDim    = "\033[2m"
+	cWhite  = "\033[97m"
+	cCyan   = "\033[36m"
+	cGreen  = "\033[32m"
+	cGray   = "\033[90m"
+)
+
+func cAccent(s string) string { return cCyan + s + cReset }
+func cBoldW(s string) string  { return cBold + cWhite + s + cReset }
+func cDimmed(s string) string { return cDim + s + cReset }
+
+func clearScreen() {
+	fmt.Print("\033[2J\033[H")
+}
+
+func printGreeting() {
+	fmt.Println()
+	logo := []string{
+		"                       888 888         ",
+		"                       888 888         ",
+		"                       888 888         ",
+		"88888b.d88b.  .d88b.  888 888 888  888",
+		"888 \"888 \"88b d88\"\"88b 888 888 888  888",
+		"888  888  888 888  888 888 888 888  888",
+		"888  888  888 Y88..88P 888 888 Y88b 888",
+		"888  888  888  \"Y88P\"  888 888  \"Y88888",
+		"                                    888",
+		"                               Y8b d88P",
+		"                                \"Y88P\" ",
+	}
+	for i, line := range logo {
+		if i == 5 {
+			fmt.Println("  " + cAccent("> ") + cBoldW(line))
+		} else {
+			fmt.Println("    " + cBoldW(line))
+		}
+	}
+	fmt.Println()
+	fmt.Printf("    %s\n", cDimmed("the terminal-native discord experience"))
+	fmt.Println()
+}
+
 func readLineWithSignal(ctx context.Context, reader *bufio.Reader) (string, error) {
 	type result struct {
 		text string
@@ -43,6 +89,9 @@ func readLineWithSignal(ctx context.Context, reader *bufio.Reader) (string, erro
 func main() {
 	_ = godotenv.Load()
 
+	clearScreen()
+	printGreeting()
+
 	forceSetup := false
 	for _, arg := range os.Args[1:] {
 		if arg == "--setup" || arg == "-s" {
@@ -52,82 +101,39 @@ func main() {
 
 	configPath, err := config.ConfigPathFromArgs(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s config: %v\n", cAccent("✗"), err)
 		os.Exit(1)
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s config: %v\n", cAccent("✗"), err)
 		os.Exit(1)
 	}
 
 	if err := discord.EnsureUserConfig(context.Background(), cfg, configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "discord auth error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s auth: %v\n", cAccent("✗"), err)
 		os.Exit(1)
 	}
 
 	auth := discord.New(cfg)
 
 	if err := setup.RunSetup(context.Background(), cfg, configPath, auth, forceSetup); err != nil {
-		fmt.Fprintf(os.Stderr, "setup error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s setup: %v\n", cAccent("✗"), err)
 	}
 
 	if len(cfg.ConfiguredGuilds) > 1 && !forceSetup {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		go func() {
-			<-sigCh
-			cancel()
-		}()
-
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Println()
-		fmt.Printf("  Current server: %s\n", cfg.General.GuildName)
-		fmt.Println("  Configured servers:")
-		for i, g := range cfg.ConfiguredGuilds {
-			marker := " "
-			if g.ID == cfg.General.GuildID {
-				marker = "*"
-			}
-			fmt.Printf("    %s [%d] %s  (%s)\n", marker, i+1, g.Name, g.Channel)
-		}
-		fmt.Println()
-		fmt.Println("  [Enter] Continue with current server")
-		fmt.Println("  [number] Switch to a different server")
-		fmt.Print("  Choice: ")
-
-		choice, err := readLineWithSignal(ctx, reader)
-		if err != nil {
-			fmt.Println("\n  Exiting.")
-			os.Exit(0)
-		}
-
-		if choice != "" {
-			var idx int
-			if _, err := fmt.Sscanf(choice, "%d", &idx); err == nil && idx >= 1 && idx <= len(cfg.ConfiguredGuilds) {
-				g := cfg.ConfiguredGuilds[idx-1]
-				cfg.General.GuildID = g.ID
-				cfg.General.GuildName = g.Name
-				cfg.General.Channel = g.Channel
-				_ = cfg.Save(configPath)
-				fmt.Printf("  Switched to: %s / %s\n", g.Name, g.Channel)
-			}
-		}
-		fmt.Println()
+		showServerPicker(cfg, configPath)
 	}
 
 	dbPath, err := config.GuildDBPath(cfg.General.GuildID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "database path error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s database path: %v\n", cAccent("✗"), err)
 		os.Exit(1)
 	}
 	store, err := db.New(dbPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "database error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s database: %v\n", cAccent("✗"), err)
 		os.Exit(1)
 	}
 	defer store.Close()
@@ -186,7 +192,7 @@ func main() {
 	}()
 
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", cAccent("✗"), err)
 		os.Exit(1)
 	}
 
@@ -203,33 +209,7 @@ func main() {
 	}
 }
 
-func runSetupRestart(configPath string) {
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
-	}
-	if err := discord.EnsureUserConfig(context.Background(), cfg, configPath); err != nil {
-		fmt.Fprintf(os.Stderr, "discord auth error: %v\n", err)
-		os.Exit(1)
-	}
-	auth := discord.New(cfg)
-	if err := setup.RunSetup(context.Background(), cfg, configPath, auth, true); err != nil {
-		fmt.Fprintf(os.Stderr, "setup error: %v\n", err)
-	}
-}
-
-func runServerPrompt(configPath string) {
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if len(cfg.ConfiguredGuilds) <= 1 {
-		return
-	}
-
+func showServerPicker(cfg *config.Config, configPath string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -241,24 +221,25 @@ func runServerPrompt(configPath string) {
 	}()
 
 	reader := bufio.NewReader(os.Stdin)
+
+	clearScreen()
+	printGreeting()
+	fmt.Printf("  %s %s %s\n", cDimmed("•"), cDimmed("Server:"), cBoldW(cfg.General.GuildName))
 	fmt.Println()
-	fmt.Printf("  Current server: %s\n", cfg.General.GuildName)
-	fmt.Println("  Configured servers:")
 	for i, g := range cfg.ConfiguredGuilds {
 		marker := " "
 		if g.ID == cfg.General.GuildID {
-			marker = "*"
+			marker = cGreen + "●" + cReset
 		}
-		fmt.Printf("    %s [%d] %s  (%s)\n", marker, i+1, g.Name, g.Channel)
+		fmt.Printf("    %s %s %s  %s\n", marker, cAccent(fmt.Sprintf("[%d]", i+1)), g.Name, cDimmed(g.Channel))
 	}
 	fmt.Println()
-	fmt.Println("  [Enter] Continue with current server")
-	fmt.Println("  [number] Switch to a different server")
-	fmt.Print("  Choice: ")
+	fmt.Printf("  %s %s  %s\n", cAccent("[↵]"), "Continue", cDimmed("current server"))
+	fmt.Printf("\n  %s Choice: ", cAccent("›"))
 
 	choice, err := readLineWithSignal(ctx, reader)
 	if err != nil {
-		fmt.Println("\n  Exiting.")
+		fmt.Printf("\n  %s\n", cDimmed("Exiting."))
 		os.Exit(0)
 	}
 
@@ -270,10 +251,40 @@ func runServerPrompt(configPath string) {
 			cfg.General.GuildName = g.Name
 			cfg.General.Channel = g.Channel
 			_ = cfg.Save(configPath)
-			fmt.Printf("  Switched to: %s / %s\n", g.Name, g.Channel)
+			fmt.Printf("  %s Switched to %s\n", cGreen+"✓"+cReset, cBoldW(g.Name))
 		}
 	}
 	fmt.Println()
+}
+
+func runSetupRestart(configPath string) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s config: %v\n", cAccent("✗"), err)
+		os.Exit(1)
+	}
+	if err := discord.EnsureUserConfig(context.Background(), cfg, configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "%s auth: %v\n", cAccent("✗"), err)
+		os.Exit(1)
+	}
+	auth := discord.New(cfg)
+	if err := setup.RunSetup(context.Background(), cfg, configPath, auth, true); err != nil {
+		fmt.Fprintf(os.Stderr, "%s setup: %v\n", cAccent("✗"), err)
+	}
+}
+
+func runServerPrompt(configPath string) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s config: %v\n", cAccent("✗"), err)
+		os.Exit(1)
+	}
+
+	if len(cfg.ConfiguredGuilds) <= 1 {
+		return
+	}
+
+	showServerPicker(cfg, configPath)
 
 	execPath, _ := os.Executable()
 	_ = syscall.Exec(execPath, os.Args, os.Environ())

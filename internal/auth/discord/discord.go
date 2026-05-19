@@ -125,7 +125,7 @@ func New(cfg *config.Config) *Authenticator {
 			Timeout: 15 * time.Second,
 		},
 		OpenURL: openBrowser,
-		Notify:  func(msg string) { fmt.Println(msg) },
+		Notify: func(msg string) { fmt.Printf("  \033[2m•\033[0m %s\n", msg) },
 	}
 }
 
@@ -187,16 +187,14 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 
 	authURL := a.AuthorizationURL(state)
 	if a.Notify != nil {
-		a.Notify("Authenticate Molly with Discord:")
-		a.Notify(authURL)
+		a.Notify("\033[36mOpening Discord auth...\033[0m")
 	}
 	if a.OpenURL != nil {
 		if err := a.OpenURL(authURL); err != nil {
 			if a.Notify == nil {
 				return nil, fmt.Errorf("opening browser for %s: %w", authURL, err)
 			}
-			a.Notify(fmt.Sprintf("Browser launch failed: %v", err))
-			a.Notify("Open the URL above manually to continue.")
+			a.Notify(fmt.Sprintf("\033[33m⚠\033[0m Browser failed — open manually:\n  \033[2m%s\033[0m", authURL))
 		}
 	}
 
@@ -219,7 +217,7 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 			return nil, err
 		}
 		if a.Notify != nil {
-			a.Notify(fmt.Sprintf("Authenticated as %s", preferredTerminalUsername(user)))
+			a.Notify(fmt.Sprintf("\033[32m✓\033[0m Logged in as \033[1m\033[97m%s\033[0m", preferredTerminalUsername(user)))
 		}
 		return &Session{
 			AccessToken:  token.AccessToken,

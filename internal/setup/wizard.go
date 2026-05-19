@@ -75,12 +75,16 @@ func RunSetup(ctx context.Context, cfg *config.Config, configPath string, auth *
 	reader := bufio.NewReader(os.Stdin)
 	state := &WizardState{Step: StepChooseMethod}
 
-	printBanner()
+	clearScreen()
+	printLogo()
+	fmt.Printf("  %s\n", bold("Setup Wizard"))
+	fmt.Printf("  %s\n", dim("Connect Molly to your Discord server."))
 	fmt.Println()
 
 	for state.Step != StepDone {
 		if ctx.Err() != nil {
-			fmt.Println("\n  Setup cancelled.")
+			fmt.Println()
+			fmt.Printf("  %s\n", dim("Setup cancelled."))
 			return nil
 		}
 
@@ -110,7 +114,8 @@ func RunSetup(ctx context.Context, cfg *config.Config, configPath string, auth *
 
 	select {
 	case <-ctx.Done():
-		fmt.Println("\n  Setup cancelled.")
+		fmt.Println()
+		fmt.Printf("  %s\n", dim("Setup cancelled."))
 		return nil
 	default:
 	}
@@ -118,21 +123,12 @@ func RunSetup(ctx context.Context, cfg *config.Config, configPath string, auth *
 	return saveConfig(cfg, configPath, state)
 }
 
-func printBanner() {
-	fmt.Println()
-	fmt.Println("  ╔══════════════════════════════════╗")
-	fmt.Println("  ║        Molly Setup Wizard        ║")
-	fmt.Println("  ╚══════════════════════════════════╝")
-	fmt.Println()
-	fmt.Println("  Welcome! Let's connect Molly to your Discord server.")
-}
-
 func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.Config, state *WizardState) error {
 	state.Method = ""
-	fmt.Println("  How would you like to configure Molly?")
+	step("How would you like to configure?")
 	fmt.Println()
-	fmt.Println("    [1] Configure via terminal (recommended)")
-	fmt.Println("    [2] Configure via web browser")
+	option("1", "Terminal "+dim("(recommended)"))
+	option("2", "Web browser")
 	fmt.Println()
 
 	for state.Method == "" {
@@ -140,7 +136,7 @@ func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.C
 			return nil
 		}
 
-		fmt.Print("  Enter choice (1 or 2): ")
+		prompt("Choice (1/2): ")
 		choice, err := readLine(ctx, reader)
 		if err != nil {
 			return nil
@@ -154,34 +150,29 @@ func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.C
 			state.Method = "web"
 			openBrowser(fmt.Sprintf("http://localhost:3000/setup?token=%s", cfg.Auth.Discord.AccessToken))
 			fmt.Println()
-			fmt.Println("  A browser window should have opened to the Molly web setup.")
-			fmt.Println("  Complete the setup there, then press Enter to continue.")
-			fmt.Println()
-			fmt.Print("  Press Enter once you've completed web setup...")
+			fmt.Printf("  %s\n", dim("Browser opened — complete setup there."))
+			prompt("Press Enter when done... ")
 			if _, err := readLine(ctx, reader); err != nil {
 				return nil
 			}
 			state.Method = "terminal"
 			state.Step = StepPickGuild
 		default:
-			fmt.Println()
-			fmt.Println("  Invalid choice. Please enter 1 or 2.")
-			fmt.Println()
+			fmt.Printf("  %s\n\n", errText("Please enter 1 or 2."))
 		}
 	}
 	return nil
 }
 
 func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Authenticator, cfg *config.Config, state *WizardState) error {
-	fmt.Println()
-	fmt.Println("  Fetching servers you manage...")
+	clearScreen()
+	printLogo()
+	fmt.Printf("  %s\n", dim("Fetching your servers..."))
 
 	allGuilds, err := auth.FetchUserGuilds(ctx, cfg.Auth.Discord.AccessToken)
 	if err != nil {
-		fmt.Printf("  Warning: Could not fetch servers: %v\n", err)
-		fmt.Println("  You can skip this step and configure later.")
-		fmt.Println()
-		fmt.Print("  Press Enter to skip server setup...")
+		fmt.Printf("  %s %s\n", warn("⚠"), dim(fmt.Sprintf("Could not fetch servers: %v", err)))
+		prompt("Press Enter to skip... ")
 		if _, err := readLine(ctx, reader); err != nil {
 			return nil
 		}
@@ -191,11 +182,8 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 
 	state.Guilds = discord.FilterAdminGuilds(allGuilds)
 	if len(state.Guilds) == 0 {
-		fmt.Println()
-		fmt.Println("  No servers found where you have admin permissions.")
-		fmt.Println("  You need Admin or Manage Server permissions in a server.")
-		fmt.Println()
-		fmt.Print("  Press Enter to continue without server setup...")
+		fmt.Printf("  %s\n", warn("No servers found with admin permissions."))
+		prompt("Press Enter to continue... ")
 		if _, err := readLine(ctx, reader); err != nil {
 			return nil
 		}
@@ -204,10 +192,14 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 	}
 
 	fmt.Println()
-	fmt.Println("  Servers you manage:")
+	step("Select a server:")
 	fmt.Println()
 	for i, g := range state.Guilds {
-		fmt.Printf("    [%d] %s\n", i+1, g.Name)
+		tag := ""
+		if g.Owner {
+			tag = " " + dim("(owner)")
+		}
+		fmt.Printf("    %s  %s%s\n", accent(fmt.Sprintf("[%d]", i+1)), g.Name, tag)
 	}
 	fmt.Println()
 
@@ -216,7 +208,7 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 			return nil
 		}
 
-		fmt.Print("  Choose a server (number): ")
+		prompt("Server number: ")
 		choice, err := readLine(ctx, reader)
 		if err != nil {
 			return nil
@@ -225,8 +217,7 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 		var idx int
 		_, err = fmt.Sscanf(choice, "%d", &idx)
 		if err != nil || idx < 1 || idx > len(state.Guilds) {
-			fmt.Println("  Invalid selection. Please choose a number from the list.")
-			fmt.Println()
+			fmt.Printf("  %s\n", errText("Invalid — pick a number from the list."))
 			continue
 		}
 
@@ -238,12 +229,13 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 }
 
 func handleConfirmGuild(ctx context.Context, reader *bufio.Reader, state *WizardState) error {
+	clearScreen()
+	printLogo()
+	fmt.Printf("  Selected: %s\n", bold(state.SelectedGuild.Name))
 	fmt.Println()
-	fmt.Printf("  You selected: %s\n", state.SelectedGuild.Name)
-	fmt.Println()
-	fmt.Println("  [y] Confirm and continue")
-	fmt.Println("  [n] Go back and choose a different server")
-	fmt.Print("  Enter choice (y/n): ")
+	option("y", "Confirm")
+	option("n", "Go back")
+	prompt("(y/n): ")
 
 	choice, err := readLine(ctx, reader)
 	if err != nil {
@@ -260,7 +252,7 @@ func handleConfirmGuild(ctx context.Context, reader *bufio.Reader, state *Wizard
 		}
 		state.Step = StepPickGuild
 	default:
-		fmt.Println("  Invalid choice. Please enter y or n.")
+		fmt.Printf("  %s\n", errText("Enter y or n."))
 	}
 	return nil
 }
@@ -276,19 +268,17 @@ func handleInviteBot(ctx context.Context, reader *bufio.Reader, cfg *config.Conf
 		botClientID, botPermissions, state.SelectedGuild.ID,
 	)
 
+	clearScreen()
+	printLogo()
+	step("Invite the bot to your server")
 	fmt.Println()
-	fmt.Println("  To connect Molly to your server, you need to invite the bot.")
-	fmt.Println()
-	fmt.Println("  Bot Invite Link:")
-	fmt.Println("  " + inviteURL)
-	fmt.Println()
-	fmt.Println("  A browser window has been opened with the invite link.")
+	fmt.Printf("  %s %s\n", dim("Link:"), accent(inviteURL))
 	openBrowser(inviteURL)
-	fmt.Println("  After inviting the bot, come back here and press Enter.")
+	fmt.Printf("  %s\n", dim("Browser opened with invite link."))
 	fmt.Println()
-	fmt.Println("  [Enter] I've invited the bot — verify & continue")
-	fmt.Println("  [b]     Go back to server selection")
-	fmt.Print("  Enter choice: ")
+	option("Enter", "I've invited — verify & continue")
+	option("b", "Go back")
+	prompt("Choice: ")
 
 	choice, err := readLine(ctx, reader)
 	if err != nil {
@@ -306,21 +296,21 @@ func handleInviteBot(ctx context.Context, reader *bufio.Reader, cfg *config.Conf
 }
 
 func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Config, state *WizardState) error {
-	fmt.Println()
-	fmt.Println("  Waiting for the bot to join your server...")
+	clearScreen()
+	printLogo()
+	fmt.Printf("  %s", dim("Verifying bot presence "))
 
 	maxAttempts := 30
 	pollInterval := 2 * time.Second
 	checkURL := fmt.Sprintf("%s/api/bot/check/%s", cfg.Server.RelayURL, state.SelectedGuild.ID)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		fmt.Printf("\r  Checking... (attempt %d/%d)", attempt, maxAttempts)
+		fmt.Printf("\r  %s %s", dim("Verifying bot presence"), dim(fmt.Sprintf("[%d/%d]", attempt, maxAttempts)))
 
 		inGuild, err := pollBotPresence(ctx, checkURL)
 		if err == nil && inGuild {
 			fmt.Println()
-			fmt.Println()
-			fmt.Println("  Bot has joined your server successfully!")
+			fmt.Printf("  %s\n", success("✓ Bot joined successfully!"))
 			fmt.Println()
 			state.Step = StepDone
 			return nil
@@ -334,16 +324,12 @@ func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Con
 	}
 
 	fmt.Println()
+	fmt.Printf("  %s\n", warn("Bot not detected — it may need more time."))
 	fmt.Println()
-	fmt.Println("  Bot presence not detected. This could mean:")
-	fmt.Println("  - The invite link was not used")
-	fmt.Println("  - The relay server is not running")
-	fmt.Println("  - The bot hasn't synced channels yet")
-	fmt.Println()
-	fmt.Println("  [r] Retry")
-	fmt.Println("  [s] Skip — save configuration and continue")
-	fmt.Println("  [b] Go back")
-	fmt.Print("  Enter choice: ")
+	option("r", "Retry")
+	option("s", "Skip — save & continue")
+	option("b", "Go back")
+	prompt("Choice: ")
 
 	choice, err := readLine(ctx, reader)
 	if err != nil {
@@ -358,9 +344,7 @@ func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Con
 		state.Step = StepInviteBot
 		return nil
 	default:
-		fmt.Println()
-		fmt.Println("  Saving configuration. You can verify later.")
-		fmt.Println()
+		fmt.Printf("  %s\n", dim("Saving configuration — verify later."))
 		state.Step = StepDone
 	}
 	return nil
@@ -422,8 +406,9 @@ func saveConfig(cfg *config.Config, configPath string, state *WizardState) error
 	}
 
 	fmt.Println()
-	fmt.Println("  Configuration saved successfully!")
-	fmt.Printf("  Connected to: %s\n", state.SelectedGuild.Name)
+	fmt.Printf("  %s %s\n", success("✓"), bold("Configuration saved"))
+	bullet("Server", state.SelectedGuild.Name)
+	fmt.Println()
 	return nil
 }
 
