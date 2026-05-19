@@ -57,3 +57,7 @@ func SystemMsg(content string) model.Message {
 		Timestamp: time.Now(),
 	}
 }
+
+type SetupWizardMsg struct{}
+
+type SetupRestartMsg struct{}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -18,6 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/ploglabs/molly-terminal/internal/commands"
+	"github.com/ploglabs/molly-terminal/internal/config"
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/model"
@@ -138,10 +140,20 @@ type Model struct {
 	errorScrollIdx   int
 	errorScrollOff   int
 
-	helpVisible bool
+	helpVisible      bool
+	configuredGuilds []config.GuildEntry
+
+	setupStep          setupStep
+	setupGuilds        []setupGuild
+	setupSelectedIdx   int
+	setupErr           string
+	discordAccessToken string
+	discordClientID    string
+	setupConfigPath    string
+	setupCfg           *config.Config
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config) Model {
 	channels := []string{channel}
 	var notifications []model.Notification
 	if store != nil {
@@ -155,17 +167,22 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 	}
 
 	return Model{
-		client:            client,
-		sender:            sender,
-		store:             store,
-		fetcher:           fetcher,
-		registry:          registry,
-		channel:           channel,
-		username:          username,
-		discordID:         discordID,
-		discordUsername:   discordUsername,
-		discordGlobalName: discordGlobalName,
-		channels:          channels,
+		client:             client,
+		sender:             sender,
+		store:              store,
+		fetcher:            fetcher,
+		registry:           registry,
+		channel:            channel,
+		username:           username,
+		discordID:          discordID,
+		discordUsername:    discordUsername,
+		discordGlobalName:  discordGlobalName,
+		configuredGuilds:   configuredGuilds,
+		discordAccessToken: discordAccessToken,
+		discordClientID:    discordClientID,
+		setupConfigPath:    setupConfigPath,
+		setupCfg:           setupCfg,
+		channels:           channels,
 		available:         make(map[string]struct{}),
 		status:            wsclient.StatusDisconnected,
 		lastSendOk:        true,
@@ -209,6 +226,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.input.SetWidth(m.chatWidth())
 		return m, nil
+
+	case setupGuildsMsg:
+		return m.handleSetupGuilds(msg)
+
+	case commands.SetupWizardMsg:
+		return m.openSetupWizard()
+
+	case commands.SetupRestartMsg:
+		sysMsg := commands.SystemMsg("restarting in server setup mode — molly will reopen the setup wizard")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		if m.client != nil {
+			_ = m.client.Close()
+		}
+		if m.setupConfigPath != "" {
+			_ = os.WriteFile(m.setupConfigPath+".setup-flag", []byte("1"), 0o644)
+		}
+		return m, tea.Quit
 
 	case wsMsg:
 		m.addChannel(msg.Channel)
@@ -658,6 +693,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.isSetupVisible() {
+		return m.handleSetupKey(msg)
+	}
+
 	// Handle Alt+R or Ctrl+G: enter reply select mode
 	altR := msg.Alt && len(msg.Runes) == 1 && (msg.Runes[0] == 'r' || msg.Runes[0] == 'R')
 	altE := msg.Alt && len(msg.Runes) == 1 && (msg.Runes[0] == 'e' || msg.Runes[0] == 'E')
@@ -677,6 +716,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
+	case "ctrl+s":
+		if !m.isSetupVisible() {
+			return m.openSetupWizard()
+		}
+		return m, nil
+
 	case "ctrl+h":
 		m.helpVisible = !m.helpVisible
 		return m, nil
@@ -952,6 +997,24 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				candidate := fmt.Sprintf("%d", n)
 				if needle == "" || strings.HasPrefix(candidate, needle) {
 					candidates = append(candidates, fmt.Sprintf("%d (%s)", n, img.Filename))
+				}
+			}
+		} else if m.isServersInput() {
+			inputStr := strings.TrimSpace(string(m.input.text))
+			parts := strings.Fields(inputStr)
+			needle := ""
+			if len(parts) > 1 {
+				needle = strings.ToLower(parts[1])
+			}
+			for i, g := range m.configuredGuilds {
+				numStr := fmt.Sprintf("%d", i+1)
+				nameLower := strings.ToLower(g.Name)
+				if needle == "" || strings.HasPrefix(numStr, needle) || strings.Contains(nameLower, needle) {
+					prefix := "  "
+					if m.setupCfg != nil && g.ID == m.setupCfg.General.GuildID {
+						prefix = "* "
+					}
+					candidates = append(candidates, fmt.Sprintf("%d %s%s", i+1, prefix, g.Name))
 				}
 			}
 		} else {
@@ -1294,6 +1357,16 @@ func (m Model) View() string {
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(themeAccent).
 			Render(fmt.Sprintf("terminal too small (%dx%d)\nmin 80x24 recommended", m.width, m.height))
+	}
+
+	if m.isSetupVisible() {
+		modalW := m.width * 70 / 100
+		modalH := m.height * 60 / 100
+		if modalW < 50 { modalW = 50 }
+		if modalW > m.width-6 { modalW = m.width - 6 }
+		if modalH < 12 { modalH = 12 }
+		if modalH > m.height-4 { modalH = m.height - 4 }
+		return centerInTerm(m.renderSetupWizard(modalW, modalH), modalW, modalH, m.width, m.height)
 	}
 
 	statusBar := fitToSize(m.renderStatusBar(), m.width, 1)
@@ -1699,6 +1772,7 @@ func (m Model) renderHelpModal(width, height int) string {
 	sections = append(sections, m.helpSection("Actions", innerW, [][2]string{
 		{"ctrl + ]", "Toggle mentions panel"},
 		{"ctrl + o", "Toggle errors panel"},
+		{"ctrl + s", "Add / configure a server"},
 		{"ctrl + v", "Paste image from clipboard"},
 		{"ctrl + c / ctrl + q", "Quit"},
 		{"ctrl + h", "Toggle this help"},
@@ -2454,6 +2528,13 @@ func (m *Model) addChannel(channel string) {
 			return
 		}
 	}
+	if m.channelsOK && m.setupCfg != nil && m.setupCfg.General.GuildID != "" {
+		if m.available != nil {
+			if _, ok := m.available[channel]; !ok {
+				return
+			}
+		}
+	}
 	m.channels = append(m.channels, channel)
 	sort.Strings(m.channels)
 	if m.store != nil && m.channelsOK {
@@ -2498,6 +2579,11 @@ func (m Model) isJoinInput() bool {
 func (m Model) isOpenInput() bool {
 	val := strings.TrimSpace(m.input.Value())
 	return strings.HasPrefix(val, "/open")
+}
+
+func (m Model) isServersInput() bool {
+	val := strings.TrimSpace(m.input.Value())
+	return strings.HasPrefix(val, "/servers")
 }
 
 func (m Model) commandCandidates(prefix string) []commands.Command {

@@ -3,6 +3,7 @@ package history
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -15,6 +16,7 @@ const defaultLimit = 100
 
 type Fetcher struct {
 	baseURL    string
+	guildID    string
 	httpClient *http.Client
 }
 
@@ -38,6 +40,11 @@ func New(baseURL string) *Fetcher {
 	}
 }
 
+func (f *Fetcher) WithGuild(guildID string) *Fetcher {
+	f.guildID = guildID
+	return f
+}
+
 func (f *Fetcher) Fetch(channel string, limit int, before *time.Time) ([]model.Message, error) {
 	if f.baseURL == "" {
 		return nil, nil
@@ -46,6 +53,9 @@ func (f *Fetcher) Fetch(channel string, limit int, before *time.Time) ([]model.M
 	url := fmt.Sprintf("%s/api/channels/%s/messages?limit=%d", f.baseURL, channel, limit)
 	if before != nil {
 		url += fmt.Sprintf("&before=%s", before.UTC().Format(time.RFC3339Nano))
+	}
+	if f.guildID != "" {
+		url += fmt.Sprintf("&guild_id=%s", f.guildID)
 	}
 
 	resp, err := f.httpClient.Get(url)
@@ -71,7 +81,13 @@ func (f *Fetcher) FetchChannels() ([]string, error) {
 		return nil, nil
 	}
 
-	url := fmt.Sprintf("%s/api/channels", f.baseURL)
+	var url string
+	if f.guildID != "" {
+		url = fmt.Sprintf("%s/api/guilds/%s/channels", f.baseURL, f.guildID)
+	} else {
+		url = fmt.Sprintf("%s/api/channels", f.baseURL)
+	}
+
 	resp, err := f.httpClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetching channels: %w", err)
@@ -82,12 +98,23 @@ func (f *Fetcher) FetchChannels() ([]string, error) {
 		return nil, fmt.Errorf("relay API returned HTTP %d", resp.StatusCode)
 	}
 
+	body, _ := io.ReadAll(resp.Body)
+
+	var wrapped struct {
+		Channels []struct {
+			Name string `json:"name"`
+			Type string `json:"type,omitempty"`
+		} `json:"channels"`
+	}
 	var channels []struct {
 		Name string `json:"name"`
 		Type string `json:"type,omitempty"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&channels); err != nil {
-		return nil, fmt.Errorf("decoding channels response: %w", err)
+
+	if err := json.Unmarshal(body, &wrapped); err == nil && len(wrapped.Channels) > 0 {
+		channels = wrapped.Channels
+	} else {
+		_ = json.Unmarshal(body, &channels)
 	}
 
 	names := make([]string, 0, len(channels))
@@ -152,6 +179,9 @@ func (f *Fetcher) FetchSince(channel string, since time.Time) tea.Cmd {
 		}
 		url := fmt.Sprintf("%s/api/channels/%s/messages?since=%s&limit=50",
 			f.baseURL, channel, since.UTC().Format(time.RFC3339Nano))
+		if f.guildID != "" {
+			url += fmt.Sprintf("&guild_id=%s", f.guildID)
+		}
 		resp, err := f.httpClient.Get(url)
 		if err != nil {
 			return FetchResultMsg{Channel: channel, Err: err}

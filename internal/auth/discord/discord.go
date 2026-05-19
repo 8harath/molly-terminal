@@ -25,7 +25,8 @@ const (
 	authorizeURL  = "https://discord.com/oauth2/authorize"
 	tokenURL      = "https://discord.com/api/oauth2/token"
 	userURL       = "https://discord.com/api/v10/users/@me"
-	scopeIdentify = "identify"
+	guildsURL     = "https://discord.com/api/v10/users/@me/guilds"
+	scopeIdentify = "identify guilds"
 )
 
 type Authenticator struct {
@@ -55,6 +56,14 @@ type User struct {
 	Locale        string `json:"locale"`
 }
 
+type Guild struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Icon        string `json:"icon"`
+	Owner       bool   `json:"owner"`
+	Permissions string `json:"permissions"`
+}
+
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -78,8 +87,14 @@ func EnsureUserConfig(ctx context.Context, cfg *config.Config, configPath string
 
 	user, err := auth.FetchCurrentUser(ctx, cfg.Auth.Discord.AccessToken)
 	switch {
-	case err == nil:
+	case err == nil && !needsReauth(cfg.Auth.Discord.Scope):
 		applyDiscordIdentity(cfg, user)
+	case needsReauth(cfg.Auth.Discord.Scope):
+		session, authErr := auth.Authenticate(ctx)
+		if authErr != nil {
+			return fmt.Errorf("authenticating with discord (scope upgrade): %w", authErr)
+		}
+		applySession(cfg, session)
 	case cfg.Auth.Discord.RefreshToken != "":
 		session, refreshErr := auth.Refresh(ctx, cfg.Auth.Discord.RefreshToken)
 		if refreshErr != nil {
@@ -95,6 +110,10 @@ func EnsureUserConfig(ctx context.Context, cfg *config.Config, configPath string
 	}
 
 	return saveConfigMerged(cfg, configPath)
+}
+
+func needsReauth(scope string) bool {
+	return !strings.Contains(scope, "guilds")
 }
 
 func New(cfg *config.Config) *Authenticator {
@@ -280,6 +299,60 @@ func (a *Authenticator) FetchCurrentUser(ctx context.Context, accessToken string
 	return user, nil
 }
 
+func (a *Authenticator) FetchUserGuilds(ctx context.Context, accessToken string) ([]Guild, error) {
+	if accessToken == "" {
+		return nil, errors.New("missing access token")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, guildsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building guilds request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := a.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("requesting discord guilds: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("discord guilds request failed: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var guilds []Guild
+	if err := json.NewDecoder(resp.Body).Decode(&guilds); err != nil {
+		return nil, fmt.Errorf("decoding discord guilds: %w", err)
+	}
+
+	return guilds, nil
+}
+
+const (
+	permAdministrator = 0x8
+	permManageGuild   = 0x20
+)
+
+func HasAdminAccess(guild Guild) bool {
+	if guild.Owner {
+		return true
+	}
+	var perms int64
+	fmt.Sscanf(guild.Permissions, "%d", &perms)
+	return (perms & permAdministrator) != 0 || (perms & permManageGuild) != 0
+}
+
+func FilterAdminGuilds(guilds []Guild) []Guild {
+	var filtered []Guild
+	for _, g := range guilds {
+		if HasAdminAccess(g) {
+			filtered = append(filtered, g)
+		}
+	}
+	return filtered
+}
+
 func (a *Authenticator) exchangeCode(ctx context.Context, code string) (*tokenResponse, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
@@ -382,7 +455,10 @@ func saveConfigMerged(cfg *config.Config, configPath string) error {
 			cfg.Server = existing.Server
 			cfg.UI = existing.UI
 			cfg.Github = existing.Github
+			cfg.ConfiguredGuilds = existing.ConfiguredGuilds
 			cfg.General.Channel = existing.General.Channel
+			cfg.General.GuildID = existing.General.GuildID
+			cfg.General.GuildName = existing.General.GuildName
 		}
 	}
 	return cfg.Save(configPath)
