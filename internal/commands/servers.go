@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ploglabs/molly-terminal/internal/config"
@@ -21,7 +20,7 @@ func NewServersCmd(cfg *config.Config, configPath string) *ServersCmd {
 func (c *ServersCmd) Name() string { return "servers" }
 
 func (c *ServersCmd) Description() string {
-	return "List and switch between configured Discord servers"
+	return "Exit and choose a different Discord server"
 }
 
 func (c *ServersCmd) Execute(args []string) (tea.Cmd, error) {
@@ -33,19 +32,14 @@ func (c *ServersCmd) Execute(args []string) (tea.Cmd, error) {
 	}
 
 	if len(args) == 0 {
-		var lines []string
-		lines = append(lines, "Configured servers:")
-		for i, g := range c.cfg.ConfiguredGuilds {
-			marker := " "
-			if g.ID == c.cfg.General.GuildID {
-				marker = "*"
-			}
-			lines = append(lines, fmt.Sprintf("  %s [%d] %s  (#%s)", marker, i+1, g.Name, g.Channel))
+		if len(c.cfg.ConfiguredGuilds) == 1 {
+			msg := SystemMsg("only one server configured — use /servers <1> to restart with it")
+			return func() tea.Msg {
+				return CommandOutputMsg{Messages: []model.Message{msg}}
+			}, nil
 		}
-		lines = append(lines, "Use /servers <number> to switch")
-		msg := SystemMsg(strings.Join(lines, "\n"))
 		return func() tea.Msg {
-			return CommandOutputMsg{Messages: []model.Message{msg}}
+			return ServersMsg{}
 		}, nil
 	}
 
@@ -73,9 +67,8 @@ func (c *ServersCmd) Execute(args []string) (tea.Cmd, error) {
 		return nil, fmt.Errorf("saving config: %w", err)
 	}
 
-	msg := SystemMsg(fmt.Sprintf("switched to %s / #%s — restart molly to apply", g.Name, g.Channel))
 	return func() tea.Msg {
-		return CommandOutputMsg{Messages: []model.Message{msg}}
+		return ServersMsg{}
 	}, nil
 }
 

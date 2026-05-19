@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ploglabs/molly-terminal/internal/auth/discord"
@@ -37,10 +39,38 @@ type WizardState struct {
 	PrevGuild     discord.Guild
 }
 
+func readLine(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		text, err := reader.ReadString('\n')
+		ch <- result{strings.TrimSpace(text), err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		return r.text, r.err
+	}
+}
+
 func RunSetup(ctx context.Context, cfg *config.Config, configPath string, auth *discord.Authenticator, force bool) error {
 	if !force && cfg.General.GuildID != "" {
 		return nil
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
 
 	reader := bufio.NewReader(os.Stdin)
 	state := &WizardState{Step: StepChooseMethod}
@@ -49,22 +79,40 @@ func RunSetup(ctx context.Context, cfg *config.Config, configPath string, auth *
 	fmt.Println()
 
 	for state.Step != StepDone {
+		if ctx.Err() != nil {
+			fmt.Println("\n  Setup cancelled.")
+			return nil
+		}
+
 		switch state.Step {
 		case StepChooseMethod:
-			handleChooseMethod(reader, cfg, state)
+			if err := handleChooseMethod(ctx, reader, cfg, state); err != nil {
+				return err
+			}
 		case StepPickGuild:
 			if err := handlePickGuild(ctx, reader, auth, cfg, state); err != nil {
 				return err
 			}
 		case StepConfirmGuild:
-			handleConfirmGuild(reader, state)
+			if err := handleConfirmGuild(ctx, reader, state); err != nil {
+				return err
+			}
 		case StepInviteBot:
-			handleInviteBot(reader, cfg, state)
+			if err := handleInviteBot(ctx, reader, cfg, state); err != nil {
+				return err
+			}
 		case StepWaitForBot:
 			if err := handleWaitForBot(ctx, reader, cfg, state); err != nil {
 				return err
 			}
 		}
+	}
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("\n  Setup cancelled.")
+		return nil
+	default:
 	}
 
 	return saveConfig(cfg, configPath, state)
@@ -79,7 +127,7 @@ func printBanner() {
 	fmt.Println("  Welcome! Let's connect Molly to your Discord server.")
 }
 
-func handleChooseMethod(reader *bufio.Reader, cfg *config.Config, state *WizardState) {
+func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.Config, state *WizardState) error {
 	state.Method = ""
 	fmt.Println("  How would you like to configure Molly?")
 	fmt.Println()
@@ -88,9 +136,15 @@ func handleChooseMethod(reader *bufio.Reader, cfg *config.Config, state *WizardS
 	fmt.Println()
 
 	for state.Method == "" {
+		if ctx.Err() != nil {
+			return nil
+		}
+
 		fmt.Print("  Enter choice (1 or 2): ")
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
+		choice, err := readLine(ctx, reader)
+		if err != nil {
+			return nil
+		}
 
 		switch choice {
 		case "1":
@@ -104,7 +158,9 @@ func handleChooseMethod(reader *bufio.Reader, cfg *config.Config, state *WizardS
 			fmt.Println("  Complete the setup there, then press Enter to continue.")
 			fmt.Println()
 			fmt.Print("  Press Enter once you've completed web setup...")
-			reader.ReadString('\n')
+			if _, err := readLine(ctx, reader); err != nil {
+				return nil
+			}
 			state.Method = "terminal"
 			state.Step = StepPickGuild
 		default:
@@ -113,6 +169,7 @@ func handleChooseMethod(reader *bufio.Reader, cfg *config.Config, state *WizardS
 			fmt.Println()
 		}
 	}
+	return nil
 }
 
 func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Authenticator, cfg *config.Config, state *WizardState) error {
@@ -125,7 +182,9 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 		fmt.Println("  You can skip this step and configure later.")
 		fmt.Println()
 		fmt.Print("  Press Enter to skip server setup...")
-		reader.ReadString('\n')
+		if _, err := readLine(ctx, reader); err != nil {
+			return nil
+		}
 		state.Step = StepDone
 		return nil
 	}
@@ -137,7 +196,9 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 		fmt.Println("  You need Admin or Manage Server permissions in a server.")
 		fmt.Println()
 		fmt.Print("  Press Enter to continue without server setup...")
-		reader.ReadString('\n')
+		if _, err := readLine(ctx, reader); err != nil {
+			return nil
+		}
 		state.Step = StepDone
 		return nil
 	}
@@ -151,12 +212,18 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 	fmt.Println()
 
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
 		fmt.Print("  Choose a server (number): ")
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
+		choice, err := readLine(ctx, reader)
+		if err != nil {
+			return nil
+		}
 
 		var idx int
-		_, err := fmt.Sscanf(choice, "%d", &idx)
+		_, err = fmt.Sscanf(choice, "%d", &idx)
 		if err != nil || idx < 1 || idx > len(state.Guilds) {
 			fmt.Println("  Invalid selection. Please choose a number from the list.")
 			fmt.Println()
@@ -170,7 +237,7 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 	}
 }
 
-func handleConfirmGuild(reader *bufio.Reader, state *WizardState) {
+func handleConfirmGuild(ctx context.Context, reader *bufio.Reader, state *WizardState) error {
 	fmt.Println()
 	fmt.Printf("  You selected: %s\n", state.SelectedGuild.Name)
 	fmt.Println()
@@ -178,8 +245,11 @@ func handleConfirmGuild(reader *bufio.Reader, state *WizardState) {
 	fmt.Println("  [n] Go back and choose a different server")
 	fmt.Print("  Enter choice (y/n): ")
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(strings.ToLower(choice))
+	choice, err := readLine(ctx, reader)
+	if err != nil {
+		return nil
+	}
+	choice = strings.ToLower(choice)
 
 	switch choice {
 	case "y", "yes", "":
@@ -192,9 +262,10 @@ func handleConfirmGuild(reader *bufio.Reader, state *WizardState) {
 	default:
 		fmt.Println("  Invalid choice. Please enter y or n.")
 	}
+	return nil
 }
 
-func handleInviteBot(reader *bufio.Reader, cfg *config.Config, state *WizardState) {
+func handleInviteBot(ctx context.Context, reader *bufio.Reader, cfg *config.Config, state *WizardState) error {
 	botClientID := cfg.Server.BotClientID
 	if botClientID == "" {
 		botClientID = cfg.Auth.Discord.ClientID
@@ -219,8 +290,11 @@ func handleInviteBot(reader *bufio.Reader, cfg *config.Config, state *WizardStat
 	fmt.Println("  [b]     Go back to server selection")
 	fmt.Print("  Enter choice: ")
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(strings.ToLower(choice))
+	choice, err := readLine(ctx, reader)
+	if err != nil {
+		return nil
+	}
+	choice = strings.ToLower(choice)
 
 	switch choice {
 	case "b":
@@ -228,6 +302,7 @@ func handleInviteBot(reader *bufio.Reader, cfg *config.Config, state *WizardStat
 	default:
 		state.Step = StepWaitForBot
 	}
+	return nil
 }
 
 func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Config, state *WizardState) error {
@@ -270,8 +345,11 @@ func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Con
 	fmt.Println("  [b] Go back")
 	fmt.Print("  Enter choice: ")
 
-	choice, _ := reader.ReadString('\n')
-	choice = strings.TrimSpace(strings.ToLower(choice))
+	choice, err := readLine(ctx, reader)
+	if err != nil {
+		return nil
+	}
+	choice = strings.ToLower(choice)
 
 	switch choice {
 	case "r":

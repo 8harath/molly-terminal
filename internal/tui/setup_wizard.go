@@ -128,7 +128,7 @@ func (m *Model) handleSetupGuilds(msg setupGuildsMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc":
+	case "esc", "ctrl+c":
 		m.setupStep = setupIdle
 		return m, nil
 
@@ -231,44 +231,96 @@ func (m Model) renderSetupWizard(width, height int) string {
 		return ""
 	}
 
-	title := panelTitleStyle().Render(" Add Server ")
 	innerW := borderedStyleWidth(width)
 	innerH := borderedStyleHeight(height)
 
-	var content string
 	switch m.setupStep {
 	case setupFetching:
-		content = lipgloss.NewStyle().Foreground(themeDim).Padding(1).Render("Fetching servers you manage...")
+		title := panelTitleStyle().Render(" Connect Server ")
+		content := lipgloss.NewStyle().Foreground(themeDim).Padding(1).Render("Fetching servers you manage...")
+		box := renderBorderedBox(panelStyle(), width, height, content)
+		return title + "\n" + box
+
 	case setupDone:
-		if m.setupErr != "" {
-			content = lipgloss.NewStyle().Foreground(themeErr).Padding(1).Render(m.setupErr)
+		title := panelTitleStyle().Render(" Error ")
+		content := lipgloss.NewStyle().Foreground(themeErr).Padding(1).Render(m.setupErr)
+		box := renderBorderedBox(panelStyle(), width, height, content)
+		return title + "\n" + box
+
+	case setupConfirming:
+		if m.setupSelectedIdx >= 0 && m.setupSelectedIdx < len(m.setupGuilds) {
+			return m.renderSetupConfirm(width, height)
 		}
-	default:
-		content = m.renderSetupGuildList(innerW)
+
+	case setupPicking:
+		return m.renderSetupPicker(width, height, innerW, innerH)
 	}
 
-	hint := lipgloss.NewStyle().Foreground(themeDim).Render(m.setupHint())
-	boxContent := clipLines(hint+"\n"+content, innerH)
+	return ""
+}
+
+func (m Model) renderSetupPicker(width, height, innerW, innerH int) string {
+	title := panelTitleStyle().Render(" Connect Server ")
+
+	intro := lipgloss.NewStyle().
+		Foreground(themeDim).
+		Padding(0, 1).
+		Render("Select a Discord server to connect:")
+
+	list := m.renderSetupGuildList(innerW)
+	hint := lipgloss.NewStyle().
+		Foreground(themeAccentDim).
+		Padding(1, 1, 0, 1).
+		Render(m.setupHint())
+
+	boxContent := intro + "\n" + list + "\n" + hint
+	boxContent = clipLines(boxContent, innerH)
 	box := renderBorderedBox(panelStyle(), width, height, boxContent)
 
-	if m.setupStep == setupConfirming && m.setupSelectedIdx >= 0 && m.setupSelectedIdx < len(m.setupGuilds) {
-		g := m.setupGuilds[m.setupSelectedIdx]
-		confirmW := width - 10
-		confirmH := 6
-		if confirmW < 30 {
-			confirmW = 30
-		}
-		confirmText := fmt.Sprintf("Add server?\n\n  %s\n\n[y] yes  [n] no", g.Name)
-		confirmBox := renderBorderedBox(
-			lipgloss.NewStyle().BorderForeground(themeAccent).BorderStyle(lipgloss.NormalBorder()).Padding(1),
-			confirmW, confirmH,
-			lipgloss.NewStyle().Foreground(themeFg).Render(confirmText),
-		)
-		centered := lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, confirmBox)
-		return title + "\n" + centered
+	return title + "\n" + box
+}
+
+func (m Model) renderSetupConfirm(width, height int) string {
+	g := m.setupGuilds[m.setupSelectedIdx]
+
+	confirmW := width - 12
+	confirmH := 8
+	if confirmW < 32 {
+		confirmW = 32
 	}
 
-	return title + "\n" + box
+	title := panelTitleStyle().Render(" Confirm ")
+	nameLine := lipgloss.NewStyle().
+		Foreground(themeAccent).
+		Bold(true).
+		Render(g.Name)
+	body := lipgloss.NewStyle().
+		Foreground(themeFg).
+		Padding(0, 1).
+		Render("Add this server to Molly?\n\n" + nameLine)
+
+	yesBtn := lipgloss.NewStyle().
+		Foreground(themeAccent).
+		Bold(true).
+		Render("[y] yes")
+	noBtn := lipgloss.NewStyle().
+		Foreground(themeDim).
+		Render("[n] no")
+	buttons := lipgloss.NewStyle().
+		PaddingTop(1).
+		Render(yesBtn + "    " + noBtn)
+
+	confirmContent := body + "\n" + buttons
+	confirmBox := renderBorderedBox(
+		lipgloss.NewStyle().
+			BorderForeground(themeBorder).
+			BorderStyle(lipgloss.RoundedBorder()).
+			Padding(1, 2),
+		confirmW, confirmH,
+		confirmContent,
+	)
+	centered := lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, confirmBox)
+	return title + "\n" + centered
 }
 
 func (m Model) renderSetupGuildList(width int) string {
@@ -276,7 +328,7 @@ func (m Model) renderSetupGuildList(width int) string {
 		return ""
 	}
 	if len(m.setupGuilds) == 0 {
-		return lipgloss.NewStyle().Foreground(themeDim).Render("No servers found.")
+		return lipgloss.NewStyle().Foreground(themeDim).Padding(1).Render("No servers found.")
 	}
 
 	names := make([]string, len(m.setupGuilds))
@@ -285,25 +337,34 @@ func (m Model) renderSetupGuildList(width int) string {
 	}
 	sort.Strings(names)
 
-	var lines []string
 	nameToIdx := make(map[string]int)
 	for i, g := range m.setupGuilds {
 		nameToIdx[g.Name] = i
 	}
+
+	var lines []string
 	for _, name := range names {
 		idx := nameToIdx[name]
 		g := m.setupGuilds[idx]
-		marker := "  "
-		style := lipgloss.NewStyle().Foreground(themeFg)
+		num := idx + 1
+
+		var line string
 		if idx == m.setupSelectedIdx {
-			marker = "▶ "
-			style = lipgloss.NewStyle().Foreground(themeAccent).Background(themeSelectedBg)
+			arrow := lipgloss.NewStyle().Foreground(themeAccent).Bold(true).Render("> ")
+			nameStyled := lipgloss.NewStyle().Foreground(themeAccent).Bold(true).Render(g.Name)
+			line = arrow + nameStyled
+		} else {
+			numStr := lipgloss.NewStyle().Foreground(themeDim).Render(fmt.Sprintf("%2d", num))
+			nameStyled := lipgloss.NewStyle().Foreground(themeFg).Render(g.Name)
+			line = numStr + ". " + nameStyled
 		}
-		ownerTag := ""
+
 		if g.Owner {
-			ownerTag = lipgloss.NewStyle().Foreground(themeWarn).Render(" [owner]")
+			ownerTag := lipgloss.NewStyle().Foreground(themeWarn).Render(" owner")
+			line = line + ownerTag
 		}
-		lines = append(lines, style.Render(fmt.Sprintf("%s%s%s", marker, g.Name, ownerTag)))
+
+		lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(line))
 	}
 
 	return strings.Join(lines, "\n")
@@ -314,11 +375,11 @@ func (m Model) setupHint() string {
 	case setupFetching:
 		return "Fetching your Discord servers..."
 	case setupPicking:
-		return "↑↓ select  enter confirm  esc close"
+		return "↑↓ navigate · enter select · esc/ctrl+c close"
 	case setupConfirming:
-		return "y confirm  n go back"
+		return "y confirm · n cancel · esc/ctrl+c close"
 	case setupDone:
-		return "enter to close  esc close"
+		return "enter or esc/ctrl+c to close"
 	}
 	return ""
 }

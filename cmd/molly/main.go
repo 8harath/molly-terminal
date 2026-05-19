@@ -22,6 +22,24 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
+func readLineWithSignal(ctx context.Context, reader *bufio.Reader) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		text, err := reader.ReadString('\n')
+		ch <- result{strings.TrimSpace(text), err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		return r.text, r.err
+	}
+}
+
 func main() {
 	_ = godotenv.Load()
 
@@ -56,6 +74,16 @@ func main() {
 	}
 
 	if len(cfg.ConfiguredGuilds) > 1 && !forceSetup {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			cancel()
+		}()
+
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Println()
 		fmt.Printf("  Current server: %s\n", cfg.General.GuildName)
@@ -72,10 +100,13 @@ func main() {
 		fmt.Println("  [number] Switch to a different server")
 		fmt.Print("  Choice: ")
 
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
+		choice, err := readLineWithSignal(ctx, reader)
+		if err != nil {
+			fmt.Println("\n  Exiting.")
+			os.Exit(0)
+		}
 
-		if choice != "" && choice != "\n" {
+		if choice != "" {
 			var idx int
 			if _, err := fmt.Sscanf(choice, "%d", &idx); err == nil && idx >= 1 && idx <= len(cfg.ConfiguredGuilds) {
 				g := cfg.ConfiguredGuilds[idx-1]
@@ -134,7 +165,7 @@ func main() {
 
 	model := tui.New(client, sender, store, fetcher, registry,
 		cfg.General.Channel, cfg.General.Username, cfg.General.DiscordID,
-		cfg.General.DiscordUsername, cfg.General.DiscordGlobalName,
+		cfg.General.DiscordUsername, cfg.General.DiscordGlobalName, cfg.General.GuildName,
 		cfg.ConfiguredGuilds,
 		cfg.Auth.Discord.AccessToken, cfg.Server.BotClientID,
 		configPath, cfg,
@@ -159,6 +190,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	serversFlagFile := configPath + ".servers-flag"
+	if _, err := os.Stat(serversFlagFile); err == nil {
+		_ = os.Remove(serversFlagFile)
+		runServerPrompt(configPath)
+	}
+
 	flagFile := configPath + ".setup-flag"
 	if _, err := os.Stat(flagFile); err == nil {
 		_ = os.Remove(flagFile)
@@ -180,4 +217,64 @@ func runSetupRestart(configPath string) {
 	if err := setup.RunSetup(context.Background(), cfg, configPath, auth, true); err != nil {
 		fmt.Fprintf(os.Stderr, "setup error: %v\n", err)
 	}
+}
+
+func runServerPrompt(configPath string) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(cfg.ConfiguredGuilds) <= 1 {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println()
+	fmt.Printf("  Current server: %s\n", cfg.General.GuildName)
+	fmt.Println("  Configured servers:")
+	for i, g := range cfg.ConfiguredGuilds {
+		marker := " "
+		if g.ID == cfg.General.GuildID {
+			marker = "*"
+		}
+		fmt.Printf("    %s [%d] %s  (%s)\n", marker, i+1, g.Name, g.Channel)
+	}
+	fmt.Println()
+	fmt.Println("  [Enter] Continue with current server")
+	fmt.Println("  [number] Switch to a different server")
+	fmt.Print("  Choice: ")
+
+	choice, err := readLineWithSignal(ctx, reader)
+	if err != nil {
+		fmt.Println("\n  Exiting.")
+		os.Exit(0)
+	}
+
+	if choice != "" {
+		var idx int
+		if _, err := fmt.Sscanf(choice, "%d", &idx); err == nil && idx >= 1 && idx <= len(cfg.ConfiguredGuilds) {
+			g := cfg.ConfiguredGuilds[idx-1]
+			cfg.General.GuildID = g.ID
+			cfg.General.GuildName = g.Name
+			cfg.General.Channel = g.Channel
+			_ = cfg.Save(configPath)
+			fmt.Printf("  Switched to: %s / %s\n", g.Name, g.Channel)
+		}
+	}
+	fmt.Println()
+
+	execPath, _ := os.Executable()
+	_ = syscall.Exec(execPath, os.Args, os.Environ())
 }

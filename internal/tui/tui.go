@@ -129,6 +129,7 @@ type Model struct {
 	discordID         string
 	discordUsername   string
 	discordGlobalName string
+	guildName         string
 	githubRepo        string
 	githubToken       string
 	githubEvents      []GithubActivityEvent
@@ -153,7 +154,7 @@ type Model struct {
 	setupCfg           *config.Config
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName, guildName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config) Model {
 	channels := []string{channel}
 	var notifications []model.Notification
 	if store != nil {
@@ -177,6 +178,7 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		discordID:          discordID,
 		discordUsername:    discordUsername,
 		discordGlobalName:  discordGlobalName,
+		guildName:          guildName,
 		configuredGuilds:   configuredGuilds,
 		discordAccessToken: discordAccessToken,
 		discordClientID:    discordClientID,
@@ -242,6 +244,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.setupConfigPath != "" {
 			_ = os.WriteFile(m.setupConfigPath+".setup-flag", []byte("1"), 0o644)
+		}
+		return m, tea.Quit
+
+	case commands.ServersMsg:
+		sysMsg := commands.SystemMsg("exiting to server selection...")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		if m.client != nil {
+			_ = m.client.Close()
+		}
+		if m.setupConfigPath != "" {
+			_ = os.WriteFile(m.setupConfigPath+".servers-flag", []byte("1"), 0o644)
 		}
 		return m, tea.Quit
 
@@ -1461,7 +1475,11 @@ func (m Model) renderStatusBar() string {
 	}
 
 	onlineCount := len(m.onlineUsers())
-	left := fmt.Sprintf(" %s  #%s  %d online", connStr, m.channel, onlineCount)
+	serverPart := ""
+	if m.guildName != "" {
+		serverPart = lipgloss.NewStyle().Foreground(themeCyan).Render(m.guildName) + "  "
+	}
+	left := fmt.Sprintf(" %s  %s#%s  %d online", connStr, serverPart, m.channel, onlineCount)
 
 	right := lipgloss.NewStyle().Foreground(themeDim).Render("ctrl+h help") + " "
 
