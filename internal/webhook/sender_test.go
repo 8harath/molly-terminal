@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewSender(t *testing.T) {
-	s := New("https://discord.com/api/webhooks/test", "", "", "arnav", "")
+	s := New("https://discord.com/api/webhooks/test", "", "", "arnav", "", "")
 	if s.webhookURL != "https://discord.com/api/webhooks/test" {
 		t.Errorf("expected webhook URL, got %q", s.webhookURL)
 	}
@@ -47,7 +47,7 @@ func TestSendSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := New(server.URL, "", "", "arnav", "")
+	s := New(server.URL, "", "", "arnav", "", "")
 	_, err := s.Send("hello from terminal", "general", "")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -62,7 +62,7 @@ func TestSendSuccess(t *testing.T) {
 }
 
 func TestSendWithEmptyWebhookURL(t *testing.T) {
-	s := New("", "", "", "arnav", "")
+	s := New("", "", "", "arnav", "", "")
 	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for empty webhook URL")
@@ -78,7 +78,7 @@ func TestSendHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := New(server.URL, "", "", "arnav", "")
+	s := New(server.URL, "", "", "arnav", "", "")
 	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 403 response")
@@ -94,7 +94,7 @@ func TestSendBadRequestError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := New(server.URL, "", "", "arnav", "")
+	s := New(server.URL, "", "", "arnav", "", "")
 	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 400 response")
@@ -102,7 +102,7 @@ func TestSendBadRequestError(t *testing.T) {
 }
 
 func TestSendConnectionError(t *testing.T) {
-	s := New("http://127.0.0.1:0", "", "", "arnav", "")
+	s := New("http://127.0.0.1:0", "", "", "arnav", "", "")
 	_, err := s.Send("hello", "general", "")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
@@ -119,7 +119,7 @@ func TestSendTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := New(server.URL, "", "", "arnav", "")
+	s := New(server.URL, "", "", "arnav", "", "")
 	s.client.Timeout = 100 * time.Millisecond
 
 	_, err := s.Send("hello", "general", "")
@@ -134,7 +134,7 @@ func TestSendAsyncReturnsTeaMsg(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := New(server.URL, "", "", "arnav", "")
+	s := New(server.URL, "", "", "arnav", "", "")
 	cmd := s.SendAsync("hello from terminal", "general", "")
 	if cmd == nil {
 		t.Fatal("expected non-nil tea.Cmd from SendAsync")
@@ -159,7 +159,7 @@ func TestSendAsyncReturnsErrorOnFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	s := New(server.URL, "", "", "arnav", "")
+	s := New(server.URL, "", "", "arnav", "", "")
 	cmd := s.SendAsync("hello", "general", "")
 	msg := cmd()
 	result, ok := msg.(SendResultMsg)

@@ -18,11 +18,12 @@ type GithubConfig struct {
 }
 
 type Config struct {
-	General GeneralConfig `toml:"general"`
-	Server  ServerConfig  `toml:"server"`
-	Auth    AuthConfig    `toml:"auth"`
-	UI      UIConfig      `toml:"ui"`
-	Github  GithubConfig  `toml:"github"`
+	General          GeneralConfig `toml:"general"`
+	Server           ServerConfig  `toml:"server"`
+	Auth             AuthConfig    `toml:"auth"`
+	UI               UIConfig      `toml:"ui"`
+	Github           GithubConfig  `toml:"github"`
+	ConfiguredGuilds []GuildEntry  `toml:"configured_guilds"`
 }
 
 type GeneralConfig struct {
@@ -32,6 +33,15 @@ type GeneralConfig struct {
 	DiscordUsername   string `toml:"discord_username"`
 	DiscordGlobalName string `toml:"discord_global_name"`
 	DiscordAvatarURL  string `toml:"discord_avatar_url"`
+	GuildID           string `toml:"guild_id"`
+	GuildName         string `toml:"guild_name"`
+}
+
+type GuildEntry struct {
+	ID         string `toml:"id"`
+	Name       string `toml:"name"`
+	Channel    string `toml:"channel"`
+	Configured bool   `toml:"configured"`
 }
 
 type ServerConfig struct {
@@ -39,6 +49,7 @@ type ServerConfig struct {
 	WebhookURL   string `toml:"webhook_url"`
 	RelayURL     string `toml:"relay_url"`
 	APIKey       string `toml:"api_key"`
+	BotClientID  string `toml:"bot_client_id"`
 }
 
 type AuthConfig struct {
@@ -74,6 +85,7 @@ func Default() *Config {
 			WebsocketURL: "ws://178.104.13.205:8080/ws",
 			WebhookURL:   "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF73le8mo_0PNejQMd39h6MB7-d6CdKsSEl9GiaVvCHEKT02MbC-uH1Rpe",
 			RelayURL:     "http://178.104.13.205:8080",
+			BotClientID:  "1503351063468572754",
 		},
 		Auth: AuthConfig{
 			Enabled:  true,
@@ -115,6 +127,38 @@ func DefaultConfigPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "config.toml"), nil
+}
+
+func dataDir() (string, error) {
+	if runtime.GOOS == "windows" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = os.Getenv("APPDATA")
+		}
+		if localAppData == "" {
+			return "", fmt.Errorf("cannot determine Windows data directory")
+		}
+		return filepath.Join(localAppData, "molly"), nil
+	}
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "molly"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "molly"), nil
+}
+
+func GuildDBPath(guildID string) (string, error) {
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	if guildID == "" {
+		return filepath.Join(dir, "molly.db"), nil
+	}
+	return filepath.Join(dir, "servers", guildID+".db"), nil
 }
 
 func ConfigPathFromArgs(args []string) (string, error) {
@@ -236,6 +280,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MOLLY_GITHUB_REPO"); v != "" {
 		cfg.Github.Repo = v
+	}
+	if v := os.Getenv("MOLLY_GUILD_ID"); v != "" {
+		cfg.General.GuildID = v
+	}
+	if v := os.Getenv("MOLLY_BOT_CLIENT_ID"); v != "" {
+		cfg.Server.BotClientID = v
 	}
 }
 

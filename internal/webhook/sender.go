@@ -23,6 +23,7 @@ type Sender struct {
 	apiKey     string
 	username   string
 	avatarURL  string
+	guildID    string
 	client     *http.Client
 }
 
@@ -33,6 +34,7 @@ type discordPayload struct {
 
 type relayPayload struct {
 	Channel   string `json:"channel"`
+	GuildID   string `json:"guild_id,omitempty"`
 	Username  string `json:"username"`
 	AvatarURL string `json:"avatar_url,omitempty"`
 	Content   string `json:"content"`
@@ -62,13 +64,14 @@ type apiErrorResponse struct {
 	Error string `json:"error"`
 }
 
-func New(webhookURL, relayURL, apiKey, username, avatarURL string) *Sender {
+func New(webhookURL, relayURL, apiKey, username, avatarURL, guildID string) *Sender {
 	return &Sender{
 		webhookURL: webhookURL,
 		relayURL:   relayURL,
 		apiKey:     apiKey,
 		username:   username,
 		avatarURL:  avatarURL,
+		guildID:    guildID,
 		client: &http.Client{
 			Timeout: defaultTimeout,
 		},
@@ -98,6 +101,9 @@ func (s *Sender) SendFile(path, channel, content string) (string, error) {
 	_ = writer.WriteField("username", s.username)
 	_ = writer.WriteField("avatar_url", s.avatarURL)
 	_ = writer.WriteField("content", content)
+	if s.guildID != "" {
+		_ = writer.WriteField("guild_id", s.guildID)
+	}
 	part, err := writer.CreateFormFile("file", filepath.Base(path))
 	if err != nil {
 		return "", fmt.Errorf("building file form: %w", err)
@@ -135,6 +141,7 @@ func (s *Sender) Edit(messageID, channel, content string) error {
 	}
 	payload := relayPayload{
 		Channel:  channel,
+		GuildID:  s.guildID,
 		Username: s.username,
 		Content:  content,
 	}
@@ -179,6 +186,7 @@ func (s *Sender) sendViaRelay(content, channel, replyToID string) (string, error
 
 	payload := relayPayload{
 		Channel:   channel,
+		GuildID:   s.guildID,
 		Username:  s.username,
 		AvatarURL: s.avatarURL,
 		Content:   content,
