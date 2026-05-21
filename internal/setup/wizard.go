@@ -34,6 +34,7 @@ const (
 type WizardState struct {
 	Step          Step
 	Method        string
+	FromWeb       bool
 	Guilds        []discord.Guild
 	SelectedGuild discord.Guild
 	PrevGuild     discord.Guild
@@ -58,7 +59,7 @@ func readLine(ctx context.Context, reader *bufio.Reader) (string, error) {
 }
 
 func RunSetup(ctx context.Context, cfg *config.Config, configPath string, auth *discord.Authenticator, force bool) error {
-	if !force && cfg.General.GuildID != "" {
+	if !force && (cfg.General.GuildID != "" || len(cfg.ConfiguredGuilds) > 0) {
 		return nil
 	}
 
@@ -148,15 +149,26 @@ func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.C
 			state.Step = StepPickGuild
 		case "2":
 			state.Method = "web"
-			openBrowser(fmt.Sprintf("http://localhost:3000/setup?token=%s", cfg.Auth.Discord.AccessToken))
+			openBrowser(fmt.Sprintf("http://localhost:3000/api/setup/auth?token=%s", cfg.Auth.Discord.AccessToken))
 			fmt.Println()
 			fmt.Printf("  %s\n", dim("Browser opened — complete setup there."))
 			prompt("Press Enter when done... ")
 			if _, err := readLine(ctx, reader); err != nil {
 				return nil
 			}
-			state.Method = "terminal"
-			state.Step = StepPickGuild
+			state.FromWeb = true
+			if webConfig, ok := fetchWebConfig(cfg, state); ok {
+				state.SelectedGuild = discord.Guild{
+					ID:   webConfig.GuildID,
+					Name: webConfig.GuildName,
+				}
+				state.Step = StepDone
+			} else {
+				fmt.Println()
+				fmt.Printf("  %s\n", errText("Could not retrieve web setup configuration. Falling back to terminal setup..."))
+				state.Method = "terminal"
+				state.Step = StepPickGuild
+			}
 		default:
 			fmt.Printf("  %s\n\n", errText("Please enter 1 or 2."))
 		}
@@ -180,15 +192,38 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 		return nil
 	}
 
-	state.Guilds = discord.FilterAdminGuilds(allGuilds)
+	var availableGuilds []discord.Guild
+	for _, g := range discord.FilterAdminGuilds(allGuilds) {
+		isConfigured := false
+		for _, cg := range cfg.ConfiguredGuilds {
+			if cg.ID == g.ID {
+				isConfigured = true
+				break
+			}
+		}
+		if !isConfigured {
+			availableGuilds = append(availableGuilds, g)
+		}
+	}
+	state.Guilds = availableGuilds
 	if len(state.Guilds) == 0 {
-		fmt.Printf("  %s\n", warn("No servers found with admin permissions."))
+		fmt.Printf("  %s\n", warn("No new servers found with admin permissions (all may already be configured)."))
 		prompt("Press Enter to continue... ")
 		if _, err := readLine(ctx, reader); err != nil {
 			return nil
 		}
 		state.Step = StepDone
 		return nil
+	}
+
+	botPresence := make(map[string]bool)
+	if state.FromWeb {
+		for _, g := range state.Guilds {
+			checkURL := fmt.Sprintf("%s/api/bot/check/%s", cfg.Server.RelayURL, g.ID)
+			if inGuild, err := pollBotPresence(ctx, checkURL); err == nil && inGuild {
+				botPresence[g.ID] = true
+			}
+		}
 	}
 
 	fmt.Println()
@@ -199,7 +234,11 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 		if g.Owner {
 			tag = " " + dim("(owner)")
 		}
-		fmt.Printf("    %s  %s%s\n", accent(fmt.Sprintf("[%d]", i+1)), g.Name, tag)
+		botTag := ""
+		if botPresence[g.ID] {
+			botTag = " " + success("(bot connected)")
+		}
+		fmt.Printf("    %s  %s%s%s\n", accent(fmt.Sprintf("[%d]", i+1)), g.Name, tag, botTag)
 	}
 	fmt.Println()
 
@@ -223,6 +262,13 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 
 		state.PrevGuild = state.SelectedGuild
 		state.SelectedGuild = state.Guilds[idx-1]
+
+		if botPresence[state.SelectedGuild.ID] {
+			fmt.Printf("  %s\n", success("✓ Bot already connected to this server."))
+			state.Step = StepDone
+			return nil
+		}
+
 		state.Step = StepConfirmGuild
 		return nil
 	}
@@ -382,10 +428,17 @@ func saveConfig(cfg *config.Config, configPath string, state *WizardState) error
 		cfg.General.GuildName = state.SelectedGuild.Name
 	}
 
+	channel := cfg.General.Channel
+	if state.FromWeb {
+		if webConfig, ok := fetchWebConfig(cfg, state); ok && webConfig.ChannelName != "" {
+			channel = webConfig.ChannelName
+		}
+	}
+
 	entry := config.GuildEntry{
 		ID:         state.SelectedGuild.ID,
 		Name:       state.SelectedGuild.Name,
-		Channel:    cfg.General.Channel,
+		Channel:    channel,
 		Configured: true,
 	}
 
@@ -408,8 +461,58 @@ func saveConfig(cfg *config.Config, configPath string, state *WizardState) error
 	fmt.Println()
 	fmt.Printf("  %s %s\n", success("✓"), bold("Configuration saved"))
 	bullet("Server", state.SelectedGuild.Name)
+	if channel != "" {
+		bullet("Channel", channel)
+	}
 	fmt.Println()
 	return nil
+}
+
+type webSetupConfig struct {
+	GuildID     string `json:"guild_id"`
+	GuildName   string `json:"guild_name"`
+	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+}
+
+func fetchWebConfig(cfg *config.Config, state *WizardState) (*webSetupConfig, bool) {
+	discordID := cfg.General.DiscordID
+	if discordID == "" {
+		return nil, false
+	}
+
+	url := fmt.Sprintf("%s/api/setup/config/%s", cfg.Server.RelayURL, discordID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false
+	}
+
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK          bool   `json:"ok"`
+		GuildID     string `json:"guild_id"`
+		GuildName   string `json:"guild_name"`
+		ChannelID   string `json:"channel_id"`
+		ChannelName string `json:"channel_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || !result.OK {
+		return nil, false
+	}
+
+	return &webSetupConfig{
+		GuildID:     result.GuildID,
+		GuildName:   result.GuildName,
+		ChannelID:   result.ChannelID,
+		ChannelName: result.ChannelName,
+	}, true
 }
 
 func openBrowser(target string) {

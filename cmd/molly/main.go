@@ -122,8 +122,18 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s setup: %v\n", cAccent("✗"), err)
 	}
 
-	if len(cfg.ConfiguredGuilds) > 1 && !forceSetup {
+	// Reload config after setup so any guilds saved during the wizard
+	// (including via web setup) are reflected in ConfiguredGuilds.
+	if freshCfg, err := config.Load(); err == nil {
+		cfg = freshCfg
+	}
+
+	if len(cfg.ConfiguredGuilds) >= 1 {
 		showServerPicker(cfg, configPath)
+		// Reload once more to pick up any server switch the user just made.
+		if freshCfg, err := config.Load(); err == nil {
+			cfg = freshCfg
+		}
 	}
 
 	dbPath, err := config.GuildDBPath(cfg.General.GuildID)
@@ -210,6 +220,42 @@ func main() {
 }
 
 func showServerPicker(cfg *config.Config, configPath string) {
+	// If GuildID is unset but ConfiguredGuilds has entries, auto-select the first one.
+	if cfg.General.GuildID == "" && len(cfg.ConfiguredGuilds) > 0 {
+		g := cfg.ConfiguredGuilds[0]
+		cfg.General.GuildID = g.ID
+		cfg.General.GuildName = g.Name
+		if cfg.General.Channel == "" {
+			cfg.General.Channel = g.Channel
+		}
+		_ = cfg.Save(configPath)
+	}
+
+	// With only 1 configured guild, no switching needed — just confirm it.
+	if len(cfg.ConfiguredGuilds) == 1 {
+		clearScreen()
+		printGreeting()
+		fmt.Printf("  %s %s %s\n", cDimmed("•"), cDimmed("Connected to:"), cBoldW(cfg.General.GuildName))
+		if cfg.General.Channel != "" {
+			fmt.Printf("  %s %s %s\n", cDimmed("•"), cDimmed("Channel:"), cDimmed(cfg.General.Channel))
+		}
+		fmt.Println()
+		fmt.Printf("  %s %s\n", cGreen+"✓"+cReset, cBoldW("Ready — press Enter to continue"))
+		fmt.Printf("\n  %s ", cAccent("›"))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			cancel()
+		}()
+		reader := bufio.NewReader(os.Stdin)
+		_, _ = readLineWithSignal(ctx, reader)
+		fmt.Println()
+		return
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -224,7 +270,11 @@ func showServerPicker(cfg *config.Config, configPath string) {
 
 	clearScreen()
 	printGreeting()
-	fmt.Printf("  %s %s %s\n", cDimmed("•"), cDimmed("Server:"), cBoldW(cfg.General.GuildName))
+	currentName := cfg.General.GuildName
+	if currentName == "" && len(cfg.ConfiguredGuilds) > 0 {
+		currentName = cfg.ConfiguredGuilds[0].Name
+	}
+	fmt.Printf("  %s %s %s\n", cDimmed("•"), cDimmed("Server:"), cBoldW(currentName))
 	fmt.Println()
 	for i, g := range cfg.ConfiguredGuilds {
 		marker := " "
@@ -271,6 +321,15 @@ func runSetupRestart(configPath string) {
 	if err := setup.RunSetup(context.Background(), cfg, configPath, auth, true); err != nil {
 		fmt.Fprintf(os.Stderr, "%s setup: %v\n", cAccent("✗"), err)
 	}
+
+	// Reload config to get the latest configured guilds
+	cfg, err = config.Load()
+	if err == nil && len(cfg.ConfiguredGuilds) >= 1 {
+		showServerPicker(cfg, configPath)
+	}
+
+	execPath, _ := os.Executable()
+	_ = syscall.Exec(execPath, os.Args, os.Environ())
 }
 
 func runServerPrompt(configPath string) {
