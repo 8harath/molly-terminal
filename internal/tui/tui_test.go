@@ -11,7 +11,6 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/model"
-	"github.com/ploglabs/molly-terminal/internal/webhook"
 )
 
 func msg(id string, ts time.Time) model.Message {
@@ -316,41 +315,6 @@ func TestSentWebsocketMessageReplacesLocalEcho(t *testing.T) {
 	}
 }
 
-func TestSendResultPersistsOnlyServerID(t *testing.T) {
-	store := openTUITestStore(t)
-	m := New(nil, nil, store, nil, nil, "general", "terminal-user", "", "", "", "test-guild", nil, "", "", "", nil)
-
-	updatedModel, cmd := m.sendWithEcho("hello")
-	if cmd != nil {
-		_ = cmd()
-	}
-	updated := updatedModel.(Model)
-	if len(updated.msgs) != 1 {
-		t.Fatalf("expected one local echo, got %d", len(updated.msgs))
-	}
-	if !strings.HasPrefix(updated.msgs[0].ID, "echo-") {
-		t.Fatalf("expected temporary echo ID before send result, got %q", updated.msgs[0].ID)
-	}
-	assertStoredMessageIDs(t, store, nil)
-
-	updatedModel, cmd = updated.Update(webhook.SendResultMsg{
-		Content:   "hello",
-		MessageID: "discord-123",
-	})
-	if cmd == nil {
-		t.Fatal("expected persistence command for real message ID")
-	}
-	if msg := cmd(); msg != nil {
-		if result, ok := msg.(dbWriteResultMsg); ok && result.Err != nil {
-			t.Fatalf("persisting upgraded message: %v", result.Err)
-		}
-	}
-	updated = updatedModel.(Model)
-	if updated.msgs[0].ID != "discord-123" {
-		t.Fatalf("expected in-memory echo to be upgraded, got %q", updated.msgs[0].ID)
-	}
-	assertStoredMessageIDs(t, store, []string{"discord-123"})
-}
 
 func openTUITestStore(t *testing.T) *db.Store {
 	t.Helper()

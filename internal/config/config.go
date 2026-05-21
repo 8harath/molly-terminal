@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -237,6 +238,17 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MOLLY_WEBSOCKET_URL"); v != "" {
 		cfg.Server.WebsocketURL = v
+		if os.Getenv("MOLLY_RELAY_URL") == "" && (cfg.Server.RelayURL == "" || cfg.Server.RelayURL == "http://178.104.13.205:8080") {
+			if strings.HasPrefix(v, "ws://localhost:") {
+				port := strings.TrimPrefix(v, "ws://localhost:")
+				port = strings.TrimSuffix(port, "/ws")
+				cfg.Server.RelayURL = "http://localhost:" + port
+			} else if strings.HasPrefix(v, "ws://127.0.0.1:") {
+				port := strings.TrimPrefix(v, "ws://127.0.0.1:")
+				port = strings.TrimSuffix(port, "/ws")
+				cfg.Server.RelayURL = "http://127.0.0.1:" + port
+			}
+		}
 	}
 	if v := os.Getenv("MOLLY_WEBHOOK_URL"); v != "" {
 		cfg.Server.WebhookURL = v

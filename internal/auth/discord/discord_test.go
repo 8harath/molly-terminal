@@ -29,8 +29,8 @@ func TestAuthorizationURLIncludesDiscordOAuthFields(t *testing.T) {
 	if q.Get("redirect_uri") != "http://127.0.0.1:53682/callback" {
 		t.Fatalf("expected redirect_uri to be set, got %q", q.Get("redirect_uri"))
 	}
-	if q.Get("scope") != "identify" {
-		t.Fatalf("expected identify scope, got %q", q.Get("scope"))
+	if q.Get("scope") != "identify guilds" {
+		t.Fatalf("expected identify guilds scope, got %q", q.Get("scope"))
 	}
 	if q.Get("response_type") != "code" {
 		t.Fatalf("expected response_type=code, got %q", q.Get("response_type"))
