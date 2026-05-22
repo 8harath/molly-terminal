@@ -76,10 +76,11 @@ func TestSaveConfigMergedPreservesDefaultFields(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := tmpDir + "/config.toml"
 
-	// Create a minimal config file on disk
+	// Create a minimal config file on disk simulating the bug
 	initialTOML := `[server]
 websocket_url = "ws://custom-websocket"
 relay_url = "http://custom-relay"
+web_setup_url = ""
 `
 	if err := os.WriteFile(configPath, []byte(initialTOML), 0644); err != nil {
 		t.Fatalf("write file: %v", err)

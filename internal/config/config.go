@@ -105,6 +105,27 @@ func Default() *Config {
 	}
 }
 
+func (c *Config) ApplyDefaults() {
+	if c.General.Channel == "" {
+		c.General.Channel = "general"
+	}
+	if c.Server.RelayURL == "" {
+		c.Server.RelayURL = "http://178.104.13.205:8080"
+	}
+	if c.Server.BotClientID == "" {
+		c.Server.BotClientID = "1503351063468572754"
+	}
+	if c.Server.WebSetupURL == "" {
+		c.Server.WebSetupURL = "https://molly.ploglabs.com"
+	}
+	if c.UI.Theme == "" {
+		c.UI.Theme = "default"
+	}
+	if c.UI.HistoryLimit <= 0 {
+		c.UI.HistoryLimit = 100
+	}
+}
+
 func configDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		appData := os.Getenv("APPDATA")
@@ -199,6 +220,7 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cfg.ApplyDefaults()
 	applyEnvOverrides(cfg)
 
 	if err := cfg.Validate(); err != nil {
@@ -209,6 +231,8 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) Save(path string) error {
+	c.ApplyDefaults()
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}

@@ -459,5 +459,6 @@ func saveConfigMerged(cfg *config.Config, configPath string) error {
 			cfg.General.GuildName = existing.General.GuildName
 		}
 	}
+	cfg.ApplyDefaults()
 	return cfg.Save(configPath)
 }
