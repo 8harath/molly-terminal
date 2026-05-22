@@ -292,6 +292,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MOLLY_WEB_SETUP_URL"); v != "" {
 		cfg.Server.WebSetupURL = v
 	}
+	if cfg.Server.WebSetupURL == "" {
+		cfg.Server.WebSetupURL = "https://molly.ploglabs.com"
+	}
 }
 
 func (c *Config) Validate() error {
