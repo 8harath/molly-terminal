@@ -2,6 +2,7 @@ package discord
 
 import (
 	"net/url"
+	"os"
 	"testing"
 
 	"github.com/ploglabs/molly-terminal/internal/config"
@@ -70,3 +71,50 @@ func TestApplyDiscordIdentityFallsBackToGlobalNameWhenUsernameMissing(t *testing
 		t.Fatalf("expected global_name fallback, got %q", cfg.General.Username)
 	}
 }
+
+func TestSaveConfigMergedPreservesDefaultFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := tmpDir + "/config.toml"
+
+	// Create a minimal config file on disk
+	initialTOML := `[server]
+websocket_url = "ws://custom-websocket"
+relay_url = "http://custom-relay"
+`
+	if err := os.WriteFile(configPath, []byte(initialTOML), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// Prepare a config struct
+	cfg := config.Default()
+	cfg.Auth.Discord.AccessToken = "test-token"
+
+	// Run saveConfigMerged
+	if err := saveConfigMerged(cfg, configPath); err != nil {
+		t.Fatalf("saveConfigMerged: %v", err)
+	}
+
+	// Load the config back from disk using standard config.Load
+	os.Args = []string{"molly", "-c", configPath}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	// Verify that the custom values are preserved
+	if loaded.Server.WebsocketURL != "ws://custom-websocket" {
+		t.Errorf("expected WebsocketURL to be 'ws://custom-websocket', got %q", loaded.Server.WebsocketURL)
+	}
+	if loaded.Server.RelayURL != "http://custom-relay" {
+		t.Errorf("expected RelayURL to be 'http://custom-relay', got %q", loaded.Server.RelayURL)
+	}
+
+	// Verify that the default values for fields not in the original file are preserved
+	if loaded.Server.WebSetupURL != "https://molly.ploglabs.com" {
+		t.Errorf("expected WebSetupURL to retain default 'https://molly.ploglabs.com', got %q", loaded.Server.WebSetupURL)
+	}
+	if loaded.Auth.Discord.AccessToken != "test-token" {
+		t.Errorf("expected AccessToken to be 'test-token', got %q", loaded.Auth.Discord.AccessToken)
+	}
+}
+

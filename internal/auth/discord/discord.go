@@ -446,10 +446,10 @@ func openBrowser(target string) error {
 }
 
 func saveConfigMerged(cfg *config.Config, configPath string) error {
-	var existing config.Config
+	existing := config.Default()
 	existingData, err := os.ReadFile(configPath)
 	if err == nil {
-		if _, err := toml.Decode(string(existingData), &existing); err == nil {
+		if _, err := toml.Decode(string(existingData), existing); err == nil {
 			cfg.Server = existing.Server
 			cfg.UI = existing.UI
 			cfg.Github = existing.Github
