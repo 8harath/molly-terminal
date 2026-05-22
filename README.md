@@ -1,5 +1,7 @@
 # molly
 
+<img src="logo.png" alt="molly" width="80" align="right">
+
 Terminal-native realtime chat client for Discord.
 
 ## Install
