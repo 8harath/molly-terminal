@@ -3,6 +3,7 @@ name: Sync RPMs to DNF Repo
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   sync:
