@@ -104,3 +104,7 @@ make build          # → bin/molly
 ```
 
 Requires [Go](https://go.dev) 1.21+.
+
+## License
+
+[Apache License 2.0](LICENSE)
