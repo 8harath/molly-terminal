@@ -13,12 +13,14 @@ jobs:
       - name: Download RPM artifacts
         run: |
           mkdir -p rpms
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
           RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq .id)
           ASSETS=$(gh api repos/${{ github.repository }}/releases/$RELEASE_ID/assets --jq '.[].name')
           for asset in $ASSETS; do
             if echo "$asset" | grep -q '\.rpm$'; then
               echo "Downloading $asset..."
-              gh release download "${{ github.ref_name }}" --pattern "$asset" -D rpms
+              gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" --pattern "$asset" -D rpms
             fi
           done
           ls -la rpms/
