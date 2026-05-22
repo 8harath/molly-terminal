@@ -9,7 +9,7 @@ Terminal-native realtime chat client for Discord.
 brew install ploglabs/tap/molly
 ```
 
-**Linux (deb/rpm/apk/arch)**
+**Linux (deb/rpm/arch)**
 ```bash
 # Debian/Ubuntu
 curl -LO https://github.com/ploglabs/molly-terminal/releases/latest/download/molly_$(curl -s https://api.github.com/repos/ploglabs/molly-terminal/releases/latest | grep tag_name | cut -d'"' -f4 | sed 's/^v//')_linux_amd64.deb
@@ -39,7 +39,7 @@ go install github.com/ploglabs/molly-terminal/cmd/molly@latest
 molly
 ```
 
-That's it. First run opens your browser for Discord auth, then you're in the chat. No config needed.
+First run opens your browser for Discord auth, then you're in the chat. No config needed.
 
 ## Keyboard Shortcuts
 
@@ -92,12 +92,15 @@ history_limit = 100
 image_protocol = "auto"    # auto, iterm2, kitty, none
 ```
 
-Override any field via environment variables (`MOLLY_USERNAME`, `MOLLY_THEME`, etc.).
+Override any field via env vars (`MOLLY_USERNAME`, `MOLLY_THEME`, etc.).
 
-## Build from source
+## Run locally
 
 ```bash
 git clone https://github.com/ploglabs/molly-terminal.git
 cd molly-terminal
 make build          # → bin/molly
+./bin/molly
 ```
+
+Requires [Go](https://go.dev) 1.21+.
