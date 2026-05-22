@@ -149,9 +149,14 @@ func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.C
 			state.Step = StepPickGuild
 		case "2":
 			state.Method = "web"
-			openBrowser(fmt.Sprintf("%s/api/setup/auth?token=%s", cfg.Server.WebSetupURL, cfg.Auth.Discord.AccessToken))
+			webURL := fmt.Sprintf("%s/api/setup/auth?token=%s", cfg.Server.WebSetupURL, cfg.Auth.Discord.AccessToken)
+			if err := openBrowser(webURL); err != nil {
+				fmt.Printf("\n  %s\n", dim("Could not open browser automatically."))
+			}
 			fmt.Println()
-			fmt.Printf("  %s\n", dim("Browser opened — complete setup there."))
+			fmt.Printf("  %s\n", bold("Setup URL:"))
+			fmt.Printf("  %s\n\n", accent(webURL))
+			fmt.Printf("  %s\n", dim("Open the link above in your browser and complete setup there."))
 			prompt("Press Enter when done... ")
 			if _, err := readLine(ctx, reader); err != nil {
 				return nil
@@ -515,7 +520,7 @@ func fetchWebConfig(cfg *config.Config, state *WizardState) (*webSetupConfig, bo
 	}, true
 }
 
-func openBrowser(target string) {
+func openBrowser(target string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -525,5 +530,5 @@ func openBrowser(target string) {
 	default:
 		cmd = exec.Command("xdg-open", target)
 	}
-	_ = cmd.Start()
+	return cmd.Start()
 }
