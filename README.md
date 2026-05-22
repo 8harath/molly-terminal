@@ -1,6 +1,8 @@
-# molly
+<p align="center">
+  <img src="logo.png" alt="molly" width="120">
+</p>
 
-<img src="logo.png" alt="molly" width="80" align="right">
+# molly
 
 Terminal-native realtime chat client for Discord.
 
