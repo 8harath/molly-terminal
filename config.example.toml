@@ -52,6 +52,11 @@ webhook_url = "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF
 # Optional — history fetching is disabled if this is empty.
 relay_url = "http://178.104.13.205:8080"
 
+# Web setup wizard URL (used when choosing "web" setup during onboarding).
+# Defaults to https://molly.ploglabs.com. Override with MOLLY_WEB_SETUP_URL env var.
+# Set to http://localhost:3000 for local development.
+web_setup_url = "https://molly.ploglabs.com"
+
 # ── Auth ─────────────────────────────────────────────────────────────────
 [auth]
 # Enable authentication. When true, Molly will use Discord OAuth2 on first run

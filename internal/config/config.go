@@ -50,6 +50,7 @@ type ServerConfig struct {
 	RelayURL     string `toml:"relay_url"`
 	APIKey       string `toml:"api_key"`
 	BotClientID  string `toml:"bot_client_id"`
+	WebSetupURL  string `toml:"web_setup_url"`
 }
 
 type AuthConfig struct {
@@ -86,6 +87,7 @@ func Default() *Config {
 			WebhookURL:   "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF73le8mo_0PNejQMd39h6MB7-d6CdKsSEl9GiaVvCHEKT02MbC-uH1Rpe",
 			RelayURL:     "http://178.104.13.205:8080",
 			BotClientID:  "1503351063468572754",
+			WebSetupURL:  "https://molly.ploglabs.com",
 		},
 		Auth: AuthConfig{
 			Enabled:  true,
@@ -286,6 +288,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MOLLY_BOT_CLIENT_ID"); v != "" {
 		cfg.Server.BotClientID = v
+	}
+	if v := os.Getenv("MOLLY_WEB_SETUP_URL"); v != "" {
+		cfg.Server.WebSetupURL = v
 	}
 }
 

@@ -149,7 +149,7 @@ func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.C
 			state.Step = StepPickGuild
 		case "2":
 			state.Method = "web"
-			openBrowser(fmt.Sprintf("http://localhost:3000/api/setup/auth?token=%s", cfg.Auth.Discord.AccessToken))
+			openBrowser(fmt.Sprintf("%s/api/setup/auth?token=%s", cfg.Server.WebSetupURL, cfg.Auth.Discord.AccessToken))
 			fmt.Println()
 			fmt.Printf("  %s\n", dim("Browser opened — complete setup there."))
 			prompt("Press Enter when done... ")
