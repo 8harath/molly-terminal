@@ -152,9 +152,10 @@ type Model struct {
 	discordClientID    string
 	setupConfigPath    string
 	setupCfg           *config.Config
+	version            string
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName, guildName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName, guildName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config, version string) Model {
 	channels := []string{channel}
 	var notifications []model.Notification
 	if store != nil {
@@ -200,6 +201,44 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		sentHashes:        make(map[string]time.Time),
 		presences:         make(map[string]model.UserPresence),
 		log:               log.New(io.Discard, "", 0),
+		version:           version,
+	}
+}
+
+type updateCheckMsg struct {
+	latestVersion string
+}
+
+func (m Model) checkUpdates() tea.Cmd {
+	return func() tea.Msg {
+		if m.version == "dev" || m.version == "" {
+			return nil
+		}
+		
+		req, err := http.NewRequest("GET", "https://api.github.com/repos/ploglabs/molly-terminal/releases/latest", nil)
+		if err != nil {
+			return nil
+		}
+		
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		
+		var release struct {
+			TagName string `json:"tag_name"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+			return nil
+		}
+		
+		return updateCheckMsg{latestVersion: release.TagName}
 	}
 }
 
@@ -213,6 +252,7 @@ func (m Model) Init() tea.Cmd {
 		history.FetchChannels(m.fetcher),
 		m.loadLocalHistory(m.channel, 100),
 		history.InitialFetch(m.fetcher, m.channel, 100),
+		m.checkUpdates(),
 		m.input.CursorBlinkCmd(),
 		periodicRefreshCmd(),
 		m.githubPollCmd(),
@@ -258,6 +298,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = os.WriteFile(m.setupConfigPath+".servers-flag", []byte("1"), 0o644)
 		}
 		return m, tea.Quit
+
+	case commands.GuildsDiscoverMsg:
+		sysMsg := commands.SystemMsg("exiting to discover servers...")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		if m.client != nil {
+			_ = m.client.Close()
+		}
+		if m.setupConfigPath != "" {
+			_ = os.WriteFile(m.setupConfigPath+".guilds-flag", []byte("1"), 0o644)
+		}
+		return m, tea.Quit
+
+	case updateCheckMsg:
+		if msg.latestVersion != "" {
+			local := strings.TrimPrefix(m.version, "v")
+			remote := strings.TrimPrefix(msg.latestVersion, "v")
+			if remote != local {
+				notif := model.Notification{
+					Channel:   "system",
+					Username:  "update-available",
+					Content:   fmt.Sprintf("molly-terminal %s is available (you have v%s). run your package manager to update.", msg.latestVersion, local),
+					Timestamp: time.Now(),
+				}
+				if m.store != nil {
+					_ = m.store.InsertNotification(notif)
+				}
+				m.notifications = append([]model.Notification{notif}, m.notifications...)
+				m.notifVisible = true
+			}
+		}
+		return m, nil
 
 	case wsMsg:
 		m.addChannel(msg.Channel)

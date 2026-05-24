@@ -20,7 +20,10 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/tui"
 	"github.com/ploglabs/molly-terminal/internal/webhook"
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
+	"github.com/ploglabs/molly-terminal/internal/guilds"
 )
+
+var version = "dev"
 
 // ANSI helpers
 const (
@@ -54,7 +57,7 @@ func printGreeting() {
 		"888  888  888  \"Y88P\"  888 888  \"Y88888",
 		"                                    888",
 		"                               Y8b d88P",
-		"                                \"Y88P\" ",
+		"                               d88P\"   ",
 	}
 	for i, line := range logo {
 		if i == 5 {
@@ -64,7 +67,7 @@ func printGreeting() {
 		}
 	}
 	fmt.Println()
-	fmt.Printf("    %s\n", cDimmed("the terminal-native discord experience"))
+	fmt.Printf("    %s %s\n", cDimmed("the terminal-native discord experience"), cGray+"v"+version+cReset)
 	fmt.Println()
 }
 
@@ -184,7 +187,7 @@ func main() {
 		cfg.General.DiscordUsername, cfg.General.DiscordGlobalName, cfg.General.GuildName,
 		cfg.ConfiguredGuilds,
 		cfg.Auth.Discord.AccessToken, cfg.Server.BotClientID,
-		configPath, cfg,
+		configPath, cfg, version,
 	)
 	if cfg.Github.Repo != "" {
 		model = model.WithGithub(cfg.Github.Repo, cfg.Github.Token)
@@ -210,6 +213,12 @@ func main() {
 	if _, err := os.Stat(serversFlagFile); err == nil {
 		_ = os.Remove(serversFlagFile)
 		runServerPrompt(configPath)
+	}
+
+	guildsFlagFile := configPath + ".guilds-flag"
+	if _, err := os.Stat(guildsFlagFile); err == nil {
+		_ = os.Remove(guildsFlagFile)
+		runGuildsPrompt(configPath)
 	}
 
 	flagFile := configPath + ".setup-flag"
@@ -344,6 +353,117 @@ func runServerPrompt(configPath string) {
 	}
 
 	showServerPicker(cfg, configPath)
+
+	execPath, _ := os.Executable()
+	_ = syscall.Exec(execPath, os.Args, os.Environ())
+}
+
+func runGuildsPrompt(configPath string) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s config: %v\n", cAccent("✗"), err)
+		os.Exit(1)
+	}
+
+	clearScreen()
+	printGreeting()
+	fmt.Printf("  %s %s\n", cDimmed("•"), cBoldW("Discover Servers"))
+	fmt.Println()
+
+	auth := discord.New(cfg)
+	userGuilds, err := auth.FetchUserGuilds(context.Background(), cfg.Auth.Discord.AccessToken)
+	if err != nil {
+		fmt.Printf("  %s Failed to fetch your servers: %v\n\n", cAccent("✗"), err)
+		os.Exit(1)
+	}
+	userGuildMap := make(map[string]string)
+	for _, g := range userGuilds {
+		userGuildMap[g.ID] = g.Name
+	}
+
+	cl := guilds.NewClient(cfg.Server.RelayURL, cfg.Server.APIKey)
+	configuredGuilds, err := cl.FetchGuilds("")
+	if err != nil {
+		fmt.Printf("  %s Failed to fetch configured servers: %v\n\n", cAccent("✗"), err)
+		os.Exit(1)
+	}
+
+	var available []guilds.Guild
+	for _, g := range configuredGuilds {
+		if realName, ok := userGuildMap[g.ID]; ok {
+			g.Name = realName
+			if g.Name == "" {
+				g.Name = "Unknown Server"
+			}
+			available = append(available, g)
+		}
+	}
+
+	if len(available) == 0 {
+		fmt.Printf("  %s\n\n", cDimmed("No configured servers found that you are a member of."))
+		os.Exit(0)
+	}
+
+	alreadyConfigured := make(map[string]bool)
+	for _, g := range cfg.ConfiguredGuilds {
+		alreadyConfigured[g.ID] = true
+	}
+
+	for i, g := range available {
+		marker := "  "
+		if alreadyConfigured[g.ID] {
+			marker = "+ "
+		}
+		fmt.Printf("    %s%s %s\n", marker, cAccent(fmt.Sprintf("[%d]", i+1)), g.Name)
+	}
+	fmt.Println()
+	fmt.Printf("  %s %s  %s\n", cAccent("[↵]"), "Cancel", cDimmed("return to chat"))
+	fmt.Printf("\n  %s Type number to add a server: ", cAccent("›"))
+
+	reader := bufio.NewReader(os.Stdin)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	choice, err := readLineWithSignal(ctx, reader)
+	if err != nil {
+		fmt.Printf("\n  %s\n", cDimmed("Exiting."))
+		os.Exit(0)
+	}
+
+	if choice != "" {
+		var idx int
+		if _, err := fmt.Sscanf(choice, "%d", &idx); err == nil && idx >= 1 && idx <= len(available) {
+			g := available[idx-1]
+
+			if !alreadyConfigured[g.ID] {
+				entry := config.GuildEntry{
+					ID:         g.ID,
+					Name:       g.Name,
+					Channel:    cfg.General.Channel,
+					Configured: true,
+				}
+				if entry.Channel == "" {
+					entry.Channel = "general"
+				}
+				cfg.ConfiguredGuilds = append(cfg.ConfiguredGuilds, entry)
+			}
+
+			cfg.General.GuildID = g.ID
+			cfg.General.GuildName = g.Name
+			if cfg.General.Channel == "" {
+				cfg.General.Channel = "general"
+			}
+			_ = cfg.Save(configPath)
+			fmt.Printf("  %s Joined %s\n", cGreen+"✓"+cReset, cBoldW(g.Name))
+		}
+	}
+	fmt.Println()
 
 	execPath, _ := os.Executable()
 	_ = syscall.Exec(execPath, os.Args, os.Environ())
