@@ -299,7 +299,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 
-	case commands.GuildsDiscoverMsg:
+	case commands.GlobalDiscoverMsg:
 		sysMsg := commands.SystemMsg("exiting to discover servers...")
 		m.msgs = append(m.msgs, sysMsg)
 		m.scrollOffset = 0
@@ -307,7 +307,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.client.Close()
 		}
 		if m.setupConfigPath != "" {
-			_ = os.WriteFile(m.setupConfigPath+".guilds-flag", []byte("1"), 0o644)
+			_ = os.WriteFile(m.setupConfigPath+".global-flag", []byte("1"), 0o644)
 		}
 		return m, tea.Quit
 

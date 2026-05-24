@@ -179,6 +179,7 @@ func main() {
 	registry.Register(commands.NewEditCmd())
 	registry.Register(commands.NewServersCmd(cfg, configPath))
 	registry.Register(commands.NewSetupCmd())
+	registry.Register(commands.NewGlobalCmd(cfg, configPath, cfg.Server.RelayURL, cfg.Server.APIKey))
 
 	tui.InitImageProtocol(cfg.UI.ImageProtocol)
 
@@ -215,10 +216,10 @@ func main() {
 		runServerPrompt(configPath)
 	}
 
-	guildsFlagFile := configPath + ".guilds-flag"
-	if _, err := os.Stat(guildsFlagFile); err == nil {
-		_ = os.Remove(guildsFlagFile)
-		runGuildsPrompt(configPath)
+	globalFlagFile := configPath + ".global-flag"
+	if _, err := os.Stat(globalFlagFile); err == nil {
+		_ = os.Remove(globalFlagFile)
+		runGlobalPrompt(configPath)
 	}
 
 	flagFile := configPath + ".setup-flag"
@@ -358,7 +359,7 @@ func runServerPrompt(configPath string) {
 	_ = syscall.Exec(execPath, os.Args, os.Environ())
 }
 
-func runGuildsPrompt(configPath string) {
+func runGlobalPrompt(configPath string) {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s config: %v\n", cAccent("✗"), err)

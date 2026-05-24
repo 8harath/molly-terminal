@@ -7,15 +7,15 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/config"
 )
 
-type GuildsCmd struct {
+type GlobalCmd struct {
 	cfg        *config.Config
 	configPath string
 	relayURL   string
 	apiKey     string
 }
 
-func NewGuildsCmd(cfg *config.Config, configPath, relayURL, apiKey string) *GuildsCmd {
-	return &GuildsCmd{
+func NewGlobalCmd(cfg *config.Config, configPath, relayURL, apiKey string) *GlobalCmd {
+	return &GlobalCmd{
 		cfg:        cfg,
 		configPath: configPath,
 		relayURL:   relayURL,
@@ -23,21 +23,21 @@ func NewGuildsCmd(cfg *config.Config, configPath, relayURL, apiKey string) *Guil
 	}
 }
 
-func (c *GuildsCmd) Name() string { return "guilds" }
+func (c *GlobalCmd) Name() string { return "global" }
 
-func (c *GuildsCmd) Description() string {
-	return "Discover servers the bot is in: /guilds"
+func (c *GlobalCmd) Description() string {
+	return "Discover global configured servers you are in: /global"
 }
 
-func (c *GuildsCmd) Execute(args []string) (tea.Cmd, error) {
+func (c *GlobalCmd) Execute(args []string) (tea.Cmd, error) {
 	if c.relayURL == "" {
 		return nil, fmt.Errorf("server.relay_url is not configured")
 	}
 
 	return func() tea.Msg {
-		return GuildsDiscoverMsg{}
+		return GlobalDiscoverMsg{}
 	}, nil
 }
 
-type GuildsDiscoverMsg struct{}
+type GlobalDiscoverMsg struct{}
 
