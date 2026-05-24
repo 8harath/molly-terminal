@@ -18,7 +18,7 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/config"
 )
 
-const botPermissions = 8
+const botPermissions = 536988672
 
 type Step int
 

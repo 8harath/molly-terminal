@@ -209,7 +209,7 @@ func (m *Model) confirmSetupGuild() (tea.Model, tea.Cmd) {
 
 	botClientID := m.discordClientID
 	inviteURL := fmt.Sprintf(
-		"https://discord.com/oauth2/authorize?client_id=%s&permissions=8&scope=bot&guild_id=%s",
+		"https://discord.com/oauth2/authorize?client_id=%s&permissions=536988672&scope=bot&guild_id=%s",
 		botClientID, g.ID,
 	)
 
