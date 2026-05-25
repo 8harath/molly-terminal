@@ -68,7 +68,7 @@ func TestWordAtCursorNoPrefix(t *testing.T) {
 }
 
 func TestMentionCompletionsCollapseSelfDiscordAliases(t *testing.T) {
-	m := New(nil, nil, nil, nil, nil, "general", "puang59", "657064257552384044", "puang59", "puang", "test-guild", nil, "", "", "", nil)
+	m := New(nil, nil, nil, nil, nil, "general", "puang59", "657064257552384044", "puang59", "puang", "test-guild", nil, "", "", "", nil, "")
 	m.terminalOnline = []string{"puang", "Vontrix", "puang59", "arnavop7"}
 	m.users = []string{"puang", "Vontrix", "puang59", "arnavop7"}
 	m.input.SetValue("@")
@@ -83,7 +83,7 @@ func TestMentionCompletionsCollapseSelfDiscordAliases(t *testing.T) {
 }
 
 func TestOnlineUsersCollapseSelfDiscordAliases(t *testing.T) {
-	m := New(nil, nil, nil, nil, nil, "general", "puang59", "657064257552384044", "puang59", "puang", "test-guild", nil, "", "", "", nil)
+	m := New(nil, nil, nil, nil, nil, "general", "puang59", "657064257552384044", "puang59", "puang", "test-guild", nil, "", "", "", nil, "")
 	m.terminalOnline = []string{"puang", "Vontrix", "puang59", "arnavop7"}
 
 	got := strings.Join(m.onlineUsers(), " ")

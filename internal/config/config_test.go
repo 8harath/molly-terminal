@@ -37,9 +37,10 @@ func TestValidateMissingFields(t *testing.T) {
 
 	cfg.Server.WebsocketURL = "wss://example.com"
 	cfg.Server.WebhookURL = ""
+	cfg.Server.RelayURL = ""
 	err = cfg.Validate()
 	if err == nil {
-		t.Fatal("expected validation error for missing webhook_url")
+		t.Fatal("expected validation error for missing webhook_url and relay_url")
 	}
 
 	cfg.Server.WebhookURL = "https://discord.com/api/webhooks/test"
@@ -339,8 +340,7 @@ func TestLoadMissingRequiredField(t *testing.T) {
 username = "testuser"
 
 [server]
-websocket_url = "wss://relay.example.com/ws"
-webhook_url = ""
+websocket_url = ""
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatalf("writing test config: %v", err)
@@ -352,7 +352,7 @@ webhook_url = ""
 
 	_, err := Load()
 	if err == nil {
-		t.Fatal("expected error for missing webhook_url")
+		t.Fatal("expected error for missing websocket_url")
 	}
 }
 
