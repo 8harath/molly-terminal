@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strconv"
 	"time"
-
 	"github.com/BurntSushi/toml"
+	"github.com/zalando/go-keyring"
 )
 
 type GithubConfig struct {
@@ -63,8 +63,8 @@ type DiscordAuthConfig struct {
 	ClientID     string `toml:"client_id"`
 	ClientSecret string `toml:"client_secret"`
 	RedirectURL  string `toml:"redirect_url"`
-	AccessToken  string `toml:"access_token"`
-	RefreshToken string `toml:"refresh_token"`
+	AccessToken  string `toml:"-"`
+	RefreshToken string `toml:"-"`
 	TokenType    string `toml:"token_type"`
 	Scope        string `toml:"scope"`
 	Expiry       string `toml:"expiry"`
@@ -83,9 +83,9 @@ func Default() *Config {
 			Channel:  "general",
 		},
 		Server: ServerConfig{
-			WebsocketURL: "ws://178.104.13.205:8080/ws",
-			WebhookURL:   "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF73le8mo_0PNejQMd39h6MB7-d6CdKsSEl9GiaVvCHEKT02MbC-uH1Rpe",
-			RelayURL:     "http://178.104.13.205:8080",
+			WebsocketURL: "wss://molly.ploglabs.com:8443/ws",
+			WebhookURL:   "",
+			RelayURL:     "https://molly.ploglabs.com:8443",
 			BotClientID:  "1503351063468572754",
 			WebSetupURL:  "https://molly.ploglabs.com",
 		},
@@ -94,7 +94,7 @@ func Default() *Config {
 			Provider: "discord",
 			Discord: DiscordAuthConfig{
 				ClientID:     "1503351063468572754",
-				ClientSecret: "-zIrXcFeKK5stattJ2i1Nl2U2-I69LHz",
+				ClientSecret: "your-client-secret-here",
 				RedirectURL:  "http://127.0.0.1:53682/callback",
 			},
 		},
@@ -110,7 +110,7 @@ func (c *Config) ApplyDefaults() {
 		c.General.Channel = "general"
 	}
 	if c.Server.RelayURL == "" {
-		c.Server.RelayURL = "http://178.104.13.205:8080"
+		c.Server.RelayURL = "https://molly.ploglabs.com:8443"
 	}
 	if c.Server.BotClientID == "" {
 		c.Server.BotClientID = "1503351063468572754"
@@ -223,6 +223,14 @@ func Load() (*Config, error) {
 	cfg.ApplyDefaults()
 	applyEnvOverrides(cfg)
 
+	// Load tokens from keyring
+	if token, err := keyring.Get("molly", "access_token"); err == nil {
+		cfg.Auth.Discord.AccessToken = token
+	}
+	if token, err := keyring.Get("molly", "refresh_token"); err == nil {
+		cfg.Auth.Discord.RefreshToken = token
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -237,7 +245,7 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
 
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("creating config file: %w", err)
 	}
@@ -245,6 +253,18 @@ func (c *Config) Save(path string) error {
 
 	if err := toml.NewEncoder(f).Encode(c); err != nil {
 		return fmt.Errorf("encoding config: %w", err)
+	}
+
+	// Save tokens to keyring
+	if c.Auth.Discord.AccessToken != "" {
+		_ = keyring.Set("molly", "access_token", c.Auth.Discord.AccessToken)
+	} else {
+		_ = keyring.Delete("molly", "access_token")
+	}
+	if c.Auth.Discord.RefreshToken != "" {
+		_ = keyring.Set("molly", "refresh_token", c.Auth.Discord.RefreshToken)
+	} else {
+		_ = keyring.Delete("molly", "refresh_token")
 	}
 
 	return nil

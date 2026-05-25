@@ -149,7 +149,7 @@ func handleChooseMethod(ctx context.Context, reader *bufio.Reader, cfg *config.C
 			state.Step = StepPickGuild
 		case "2":
 			state.Method = "web"
-			webURL := fmt.Sprintf("%s/api/setup/auth?token=%s", cfg.Server.WebSetupURL, cfg.Auth.Discord.AccessToken)
+			webURL := fmt.Sprintf("%s/terminal-setup#token=%s", cfg.Server.WebSetupURL, cfg.Auth.Discord.AccessToken)
 			if err := openBrowser(webURL); err != nil {
 				fmt.Printf("\n  %s\n", dim("Could not open browser automatically."))
 			}

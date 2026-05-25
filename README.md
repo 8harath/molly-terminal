@@ -82,9 +82,9 @@ Config file at `~/.config/molly/config.toml`. Everything is pre-configured — o
 username = "anon"          # overridden by Discord auth
 
 [server]
-websocket_url = "ws://178.104.13.205:8080/ws"
+websocket_url = "wss://molly.ploglabs.com:8443/ws"
 webhook_url = "https://discord.com/api/webhooks/..."
-relay_url = "http://178.104.13.205:8080"
+relay_url = "https://molly.ploglabs.com:8443"
 
 [auth]
 enabled = true             # Discord OAuth2 login on first run

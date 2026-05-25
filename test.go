@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	cl := guilds.NewClient("http://178.104.13.205:8080", "")
+	cl := guilds.NewClient("https://molly.ploglabs.com:8443", "")
 	list, err := cl.FetchGuilds("")
 	if err != nil {
 		fmt.Println("error:", err)
