@@ -15,7 +15,7 @@
 #   MOLLY_AUTH_ENABLED           → auth.enabled (true/false)
 #   MOLLY_AUTH_PROVIDER          → auth.provider
 #   MOLLY_DISCORD_CLIENT_ID      → auth.discord.client_id
-#   MOLLY_DISCORD_CLIENT_SECRET  → auth.discord.client_secret
+#   MOLLY_DISCORD_CLIENT_SECRET  → auth.discord.client_secret (optional; private deployments)
 #   MOLLY_DISCORD_REDIRECT_URL   → auth.discord.redirect_url
 #   MOLLY_THEME                  → ui.theme
 #   MOLLY_HISTORY_LIMIT          → ui.history_limit
@@ -72,8 +72,8 @@ provider = "discord"
 # Pre-configured for Molly — no setup needed.
 client_id = "1503351063468572754"
 
-# Discord application client secret.
-# Pre-configured for Molly — no setup needed.
+# Discord application client secret (optional for confidential/private deployments).
+# Leave empty for public/native CLI clients using PKCE.
 client_secret = ""
 
 # OAuth2 redirect URL. Must be a loopback address and must match

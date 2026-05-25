@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ const (
 	userURL       = "https://discord.com/api/v10/users/@me"
 	guildsURL     = "https://discord.com/api/v10/users/@me/guilds"
 	scopeIdentify = "identify guilds"
+	pkceEntropy   = 32
 )
 
 type Authenticator struct {
@@ -125,7 +127,7 @@ func New(cfg *config.Config) *Authenticator {
 			Timeout: 15 * time.Second,
 		},
 		OpenURL: openBrowser,
-		Notify: func(msg string) { fmt.Printf("  \033[2m•\033[0m %s\n", msg) },
+		Notify:  func(msg string) { fmt.Printf("  \033[2m•\033[0m %s\n", msg) },
 	}
 }
 
@@ -134,6 +136,11 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generating oauth state: %w", err)
 	}
+	codeVerifier, err := randomCodeVerifier()
+	if err != nil {
+		return nil, fmt.Errorf("generating pkce code verifier: %w", err)
+	}
+	codeChallenge := codeChallengeS256(codeVerifier)
 
 	redirect, err := url.Parse(a.RedirectURL)
 	if err != nil {
@@ -185,7 +192,7 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 	}()
 	defer server.Shutdown(context.Background())
 
-	authURL := a.AuthorizationURL(state)
+	authURL := a.AuthorizationURL(state, codeChallenge)
 	if a.Notify != nil {
 		a.Notify("\033[36mOpening Discord auth...\033[0m")
 	}
@@ -208,7 +215,7 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 		if result.State != state {
 			return nil, errors.New("oauth state mismatch")
 		}
-		token, err := a.exchangeCode(ctx, result.Code)
+		token, err := a.exchangeCode(ctx, result.Code, codeVerifier)
 		if err != nil {
 			return nil, err
 		}
@@ -230,13 +237,15 @@ func (a *Authenticator) Authenticate(ctx context.Context) (*Session, error) {
 	}
 }
 
-func (a *Authenticator) AuthorizationURL(state string) string {
+func (a *Authenticator) AuthorizationURL(state, codeChallenge string) string {
 	q := url.Values{}
 	q.Set("response_type", "code")
 	q.Set("client_id", a.ClientID)
 	q.Set("scope", scopeIdentify)
 	q.Set("state", state)
 	q.Set("redirect_uri", a.RedirectURL)
+	q.Set("code_challenge", codeChallenge)
+	q.Set("code_challenge_method", "S256")
 	return authorizeURL + "?" + q.Encode()
 }
 
@@ -245,9 +254,6 @@ func (a *Authenticator) Refresh(ctx context.Context, refreshToken string) (*Sess
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", a.ClientID)
-	if a.ClientSecret != "" && a.ClientSecret != "your-client-secret-here" {
-		form.Set("client_secret", a.ClientSecret)
-	}
 
 	token, err := a.doTokenRequest(ctx, form)
 	if err != nil {
@@ -340,7 +346,7 @@ func HasAdminAccess(guild Guild) bool {
 	}
 	var perms int64
 	fmt.Sscanf(guild.Permissions, "%d", &perms)
-	return (perms & permAdministrator) != 0 || (perms & permManageGuild) != 0
+	return (perms&permAdministrator) != 0 || (perms&permManageGuild) != 0
 }
 
 func FilterAdminGuilds(guilds []Guild) []Guild {
@@ -353,15 +359,13 @@ func FilterAdminGuilds(guilds []Guild) []Guild {
 	return filtered
 }
 
-func (a *Authenticator) exchangeCode(ctx context.Context, code string) (*tokenResponse, error) {
+func (a *Authenticator) exchangeCode(ctx context.Context, code, codeVerifier string) (*tokenResponse, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
 	form.Set("redirect_uri", a.RedirectURL)
 	form.Set("client_id", a.ClientID)
-	if a.ClientSecret != "" && a.ClientSecret != "your-client-secret-here" {
-		form.Set("client_secret", a.ClientSecret)
-	}
+	form.Set("code_verifier", codeVerifier)
 	return a.doTokenRequest(ctx, form)
 }
 
@@ -434,6 +438,19 @@ func randomState() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func randomCodeVerifier() (string, error) {
+	buf := make([]byte, pkceEntropy)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func codeChallengeS256(codeVerifier string) string {
+	sum := sha256.Sum256([]byte(codeVerifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func openBrowser(target string) error {
