@@ -94,7 +94,7 @@ func Default() *Config {
 			Provider: "discord",
 			Discord: DiscordAuthConfig{
 				ClientID:     "1503351063468572754",
-				ClientSecret: "your-client-secret-here",
+				ClientSecret: "",
 				RedirectURL:  "http://127.0.0.1:53682/callback",
 			},
 		},
@@ -348,8 +348,8 @@ func (c *Config) Validate() error {
 	if c.Server.WebsocketURL == "" {
 		return fmt.Errorf("missing server.websocket_url — set it in config, or use MOLLY_WEBSOCKET_URL env var")
 	}
-	if c.Server.WebhookURL == "" {
-		return fmt.Errorf("missing server.webhook_url — set it in config, or use MOLLY_WEBHOOK_URL env var")
+	if c.Server.WebhookURL == "" && c.Server.RelayURL == "" {
+		return fmt.Errorf("missing server.webhook_url and server.relay_url — set at least one in config")
 	}
 	if c.Auth.Enabled {
 		if c.Auth.Provider != "discord" {
@@ -357,9 +357,6 @@ func (c *Config) Validate() error {
 		}
 		if c.Auth.Discord.ClientID == "" {
 			return fmt.Errorf("missing auth.discord.client_id — set it in config, or use MOLLY_DISCORD_CLIENT_ID env var")
-		}
-		if c.Auth.Discord.ClientSecret == "" {
-			return fmt.Errorf("missing auth.discord.client_secret — set it in config, or use MOLLY_DISCORD_CLIENT_SECRET env var")
 		}
 		if c.Auth.Discord.RedirectURL == "" {
 			return fmt.Errorf("missing auth.discord.redirect_url — set it in config, or use MOLLY_DISCORD_REDIRECT_URL env var")

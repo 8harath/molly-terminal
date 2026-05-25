@@ -245,7 +245,9 @@ func (a *Authenticator) Refresh(ctx context.Context, refreshToken string) (*Sess
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", a.ClientID)
-	form.Set("client_secret", a.ClientSecret)
+	if a.ClientSecret != "" && a.ClientSecret != "your-client-secret-here" {
+		form.Set("client_secret", a.ClientSecret)
+	}
 
 	token, err := a.doTokenRequest(ctx, form)
 	if err != nil {
@@ -357,7 +359,9 @@ func (a *Authenticator) exchangeCode(ctx context.Context, code string) (*tokenRe
 	form.Set("code", code)
 	form.Set("redirect_uri", a.RedirectURL)
 	form.Set("client_id", a.ClientID)
-	form.Set("client_secret", a.ClientSecret)
+	if a.ClientSecret != "" && a.ClientSecret != "your-client-secret-here" {
+		form.Set("client_secret", a.ClientSecret)
+	}
 	return a.doTokenRequest(ctx, form)
 }
 

@@ -74,7 +74,7 @@ client_id = "1503351063468572754"
 
 # Discord application client secret.
 # Pre-configured for Molly — no setup needed.
-client_secret = "your-client-secret-here"
+client_secret = ""
 
 # OAuth2 redirect URL. Must be a loopback address and must match
 # what you configured in the Discord Developer Portal under OAuth2 → Redirects.
