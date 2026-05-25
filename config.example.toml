@@ -41,16 +41,16 @@ discord_avatar_url = ""
 # WebSocket relay server URL.
 # This is where Molly subscribes to receive real-time messages.
 # Required. Example: wss://relay.example.com/ws
-websocket_url = "ws://178.104.13.205:8080/ws"
+websocket_url = "wss://molly.ploglabs.com:8443/ws"
 
 # Discord webhook URL for sending messages.
 # Create one in your Discord server: Server Settings → Integrations → Webhooks.
 # Required. Example: https://discord.com/api/webhooks/123456789/abcdef
-webhook_url = "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF73le8mo_0PNejQMd39h6MB7-d6CdKsSEl9GiaVvCHEKT02MbC-uH1Rpe"
+webhook_url = ""
 
 # Relay REST API base URL for fetching message history.
 # Optional — history fetching is disabled if this is empty.
-relay_url = "http://178.104.13.205:8080"
+relay_url = "https://molly.ploglabs.com:8443"
 
 # Web setup wizard URL (used when choosing "web" setup during onboarding).
 # Defaults to https://molly.ploglabs.com. Override with MOLLY_WEB_SETUP_URL env var.
@@ -74,7 +74,7 @@ client_id = "1503351063468572754"
 
 # Discord application client secret.
 # Pre-configured for Molly — no setup needed.
-client_secret = "-zIrXcFeKK5stattJ2i1Nl2U2-I69LHz"
+client_secret = "your-client-secret-here"
 
 # OAuth2 redirect URL. Must be a loopback address and must match
 # what you configured in the Discord Developer Portal under OAuth2 → Redirects.
@@ -83,8 +83,6 @@ redirect_url = "http://127.0.0.1:53682/callback"
 
 # Token fields — populated automatically after successful OAuth login.
 # You should not need to edit these manually.
-access_token = ""
-refresh_token = ""
 token_type = ""
 scope = ""
 expiry = ""
