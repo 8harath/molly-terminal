@@ -114,4 +114,12 @@ nix:
     description: "Terminal-native realtime chat client for Discord"
     license: mit
 
-
+aurs:
+  - name: molly-bin
+    homepage: "https://github.com/ploglabs/molly-terminal"
+    description: "Terminal-native realtime chat client for Discord"
+    maintainers:
+      - "ploglabs <hello@ploglabs.dev>"
+    license: "Apache-2.0"
+    private_key: '{{ .Env.AUR_KEY }}'
+    git_url: 'ssh://aur@aur.archlinux.org/molly-bin.git'
