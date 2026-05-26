@@ -104,9 +104,9 @@ history_limit = 100
 image_protocol = "auto"
 
 # ── GitHub Activity ──────────────────────────────────────────────────────
-# Optional. When both `repo` and (for private repos) `token` are set, Molly
-# shows a sidebar panel with the latest events from the GitHub repo, refreshed
-# every 60 seconds. Leave either field empty to disable the panel.
+# Optional. When `repo` (and, for private repos, a token) is set, Molly shows
+# a sidebar panel with the latest events from the GitHub repo, refreshed every
+# 60 seconds. Leave `repo` empty to disable the panel.
 [github]
 # Personal access token used to authenticate against the GitHub API.
 # - Public repos: optional, but recommended (raises rate limit from 60/hr to
@@ -114,7 +114,15 @@ image_protocol = "auto"
 # - Private repos: required, with `repo` scope (classic PAT) or `Contents:
 #   Read` (fine-grained PAT).
 # Create one at https://github.com/settings/tokens
-token = ""
+#
+# Storage: the token is kept in your OS keyring (Keychain on macOS, Secret
+# Service on Linux, Credential Manager on Windows), NOT in this file. To set
+# it, either:
+#   1. Export MOLLY_GITHUB_TOKEN=ghp_... in your shell, or
+#   2. Paste it into the `token = "..."` line below — Molly will read it once,
+#      move it to the keyring, and strip it from this file on next save.
+# Leave commented out for normal use.
+# token = ""
 
 # Repository to track, in "owner/repo" format. Example: "ploglabs/molly-terminal".
 repo = ""
