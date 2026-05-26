@@ -15,25 +15,25 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/commands"
 	"github.com/ploglabs/molly-terminal/internal/config"
 	"github.com/ploglabs/molly-terminal/internal/db"
+	"github.com/ploglabs/molly-terminal/internal/guilds"
 	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/setup"
 	"github.com/ploglabs/molly-terminal/internal/tui"
 	"github.com/ploglabs/molly-terminal/internal/webhook"
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
-	"github.com/ploglabs/molly-terminal/internal/guilds"
 )
 
 var version = "dev"
 
 // ANSI helpers
 const (
-	cReset  = "\033[0m"
-	cBold   = "\033[1m"
-	cDim    = "\033[2m"
-	cWhite  = "\033[97m"
-	cCyan   = "\033[36m"
-	cGreen  = "\033[32m"
-	cGray   = "\033[90m"
+	cReset = "\033[0m"
+	cBold  = "\033[1m"
+	cDim   = "\033[2m"
+	cWhite = "\033[97m"
+	cCyan  = "\033[36m"
+	cGreen = "\033[32m"
+	cGray  = "\033[90m"
 )
 
 func cAccent(s string) string { return cCyan + s + cReset }
@@ -182,6 +182,7 @@ func main() {
 	registry.Register(commands.NewGlobalCmd(cfg, configPath, cfg.Server.RelayURL, cfg.Server.APIKey))
 
 	tui.InitImageProtocol(cfg.UI.ImageProtocol)
+	tui.ApplyTheme(cfg.UI.Theme)
 
 	model := tui.New(client, sender, store, fetcher, registry,
 		cfg.General.Channel, cfg.General.Username, cfg.General.DiscordID,

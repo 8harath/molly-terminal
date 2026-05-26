@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ploglabs/molly-terminal/internal/model"
 )
 
@@ -115,5 +116,42 @@ func TestMsgsToUsersEmpty(t *testing.T) {
 	users := msgsToUsers(nil)
 	if len(users) != 0 {
 		t.Errorf("expected 0 users, got %d", len(users))
+	}
+}
+
+func TestApplyThemeDracula(t *testing.T) {
+	ApplyTheme("dracula")
+	if themeBg != lipgloss.Color("#282a36") {
+		t.Fatalf("expected dracula background, got %q", themeBg)
+	}
+	if themeAccent != lipgloss.Color("#bd93f9") {
+		t.Fatalf("expected dracula accent, got %q", themeAccent)
+	}
+	if len(usernameColors) == 0 {
+		t.Fatal("expected username colors for dracula")
+	}
+}
+
+func TestApplyThemeSolarized(t *testing.T) {
+	ApplyTheme("solarized")
+	if themeBg != lipgloss.Color("#002b36") {
+		t.Fatalf("expected solarized background, got %q", themeBg)
+	}
+	if themeAccent != lipgloss.Color("#eee8d5") {
+		t.Fatalf("expected solarized accent, got %q", themeAccent)
+	}
+	if len(usernameColors) == 0 {
+		t.Fatal("expected username colors for solarized")
+	}
+}
+
+func TestApplyThemeDefaultAndUnknown(t *testing.T) {
+	ApplyTheme("dracula")
+	ApplyTheme("unknown-theme")
+	if themeBg != lipgloss.Color("#000000") {
+		t.Fatalf("expected default background for unknown theme, got %q", themeBg)
+	}
+	if themeAccent != lipgloss.Color("#ffffff") {
+		t.Fatalf("expected default accent for unknown theme, got %q", themeAccent)
 	}
 }
