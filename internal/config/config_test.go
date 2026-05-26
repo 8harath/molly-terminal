@@ -390,4 +390,27 @@ func clearConfigEnvVars() {
 	os.Unsetenv("MOLLY_RELAY_URL")
 	os.Unsetenv("MOLLY_THEME")
 	os.Unsetenv("MOLLY_HISTORY_LIMIT")
+	os.Unsetenv("MOLLY_GITHUB_TOKEN")
+	os.Unsetenv("MOLLY_GITHUB_REPO")
 }
+
+func TestGithubEnvOverrides(t *testing.T) {
+	cfg := Default()
+
+	os.Setenv("MOLLY_GITHUB_TOKEN", "ghp_envtoken")
+	os.Setenv("MOLLY_GITHUB_REPO", "octocat/hello-world")
+	defer func() {
+		os.Unsetenv("MOLLY_GITHUB_TOKEN")
+		os.Unsetenv("MOLLY_GITHUB_REPO")
+	}()
+
+	applyEnvOverrides(cfg)
+
+	if cfg.Github.Token != "ghp_envtoken" {
+		t.Errorf("expected MOLLY_GITHUB_TOKEN to set github.token, got '%s'", cfg.Github.Token)
+	}
+	if cfg.Github.Repo != "octocat/hello-world" {
+		t.Errorf("expected MOLLY_GITHUB_REPO to set github.repo, got '%s'", cfg.Github.Repo)
+	}
+}
+
