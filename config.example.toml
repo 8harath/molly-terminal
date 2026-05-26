@@ -19,6 +19,8 @@
 #   MOLLY_DISCORD_REDIRECT_URL   → auth.discord.redirect_url
 #   MOLLY_THEME                  → ui.theme
 #   MOLLY_HISTORY_LIMIT          → ui.history_limit
+#   MOLLY_GITHUB_TOKEN           → github.token
+#   MOLLY_GITHUB_REPO            → github.repo
 
 # ── General ──────────────────────────────────────────────────────────────
 [general]
@@ -100,3 +102,19 @@ history_limit = 100
 # detection fails — e.g. image_protocol = "iterm2" for iTerm2+tmux.
 # Override with MOLLY_IMAGE_PROTOCOL env var.
 image_protocol = "auto"
+
+# ── GitHub Activity ──────────────────────────────────────────────────────
+# Optional. When both `repo` and (for private repos) `token` are set, Molly
+# shows a sidebar panel with the latest events from the GitHub repo, refreshed
+# every 60 seconds. Leave either field empty to disable the panel.
+[github]
+# Personal access token used to authenticate against the GitHub API.
+# - Public repos: optional, but recommended (raises rate limit from 60/hr to
+#   5000/hr).
+# - Private repos: required, with `repo` scope (classic PAT) or `Contents:
+#   Read` (fine-grained PAT).
+# Create one at https://github.com/settings/tokens
+token = ""
+
+# Repository to track, in "owner/repo" format. Example: "ploglabs/molly-terminal".
+repo = ""

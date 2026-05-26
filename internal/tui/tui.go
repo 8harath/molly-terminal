@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,8 +63,9 @@ type GithubActivityEvent struct {
 }
 
 type githubActivityMsg struct {
-	Events []GithubActivityEvent
-	Err    error
+	Events  []GithubActivityEvent
+	Err     error
+	Warning string
 }
 
 type trackedError struct {
@@ -762,6 +764,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.githubLastFetch = time.Now()
 		} else {
 			m.addError(fmt.Sprintf("github: %v", msg.Err))
+		}
+		if msg.Warning != "" {
+			m.addError(fmt.Sprintf("github: %s", msg.Warning))
 		}
 		return m, m.githubPollCmd()
 
@@ -3080,8 +3085,9 @@ func (m Model) fetchGithubActivity() githubActivityMsg {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return githubActivityMsg{Err: fmt.Errorf("github API: HTTP %d", resp.StatusCode)}
+		return githubActivityMsg{Err: describeGithubStatus(resp, m.githubRepo)}
 	}
+	warning := githubRateLimitWarning(resp)
 	var raw []struct {
 		Type  string `json:"type"`
 		Actor struct {
@@ -3122,7 +3128,43 @@ func (m Model) fetchGithubActivity() githubActivityMsg {
 			Timestamp: ts,
 		})
 	}
-	return githubActivityMsg{Events: events}
+	return githubActivityMsg{Events: events, Warning: warning}
+}
+
+// describeGithubStatus turns a non-200 GitHub API response into an actionable error.
+func describeGithubStatus(resp *http.Response, repo string) error {
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("GitHub: token invalid or expired")
+	case http.StatusForbidden:
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > 0 {
+				return fmt.Errorf("GitHub: rate limit exceeded (resets %s)", time.Unix(reset, 0).Local().Format("15:04:05"))
+			}
+			return fmt.Errorf("GitHub: rate limit exceeded")
+		}
+		return fmt.Errorf("GitHub: forbidden — check token scopes for %s", repo)
+	case http.StatusNotFound:
+		return fmt.Errorf("GitHub: repo %q not found or private", repo)
+	default:
+		return fmt.Errorf("github API: HTTP %d", resp.StatusCode)
+	}
+}
+
+// githubRateLimitWarning returns a short warning if the remaining quota is low, else "".
+func githubRateLimitWarning(resp *http.Response) string {
+	remainingStr := resp.Header.Get("X-RateLimit-Remaining")
+	if remainingStr == "" {
+		return ""
+	}
+	remaining, err := strconv.Atoi(remainingStr)
+	if err != nil || remaining >= 5 {
+		return ""
+	}
+	if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > 0 {
+		return fmt.Sprintf("rate limit low (%d left, resets %s)", remaining, time.Unix(reset, 0).Local().Format("15:04:05"))
+	}
+	return fmt.Sprintf("rate limit low (%d left)", remaining)
 }
 
 // newGithubRequest builds an HTTP GET request with optional auth token.
