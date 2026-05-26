@@ -151,9 +151,9 @@ func main() {
 	}
 	defer store.Close()
 
-	client := wsclient.New(cfg.Server.WebsocketURL, cfg.General.Username, cfg.General.Channel)
+	client := wsclient.New(cfg.Server.WebsocketURL, cfg.General.Username, cfg.General.Channel, cfg.Server.APIKey)
 	sender := webhook.New(cfg.Server.WebhookURL, cfg.Server.RelayURL, cfg.Server.APIKey, cfg.General.Username, cfg.General.DiscordAvatarURL, cfg.General.GuildID)
-	fetcher := history.New(cfg.Server.RelayURL)
+	fetcher := history.New(cfg.Server.RelayURL, cfg.Server.APIKey)
 	if cfg.General.GuildID != "" {
 		fetcher = fetcher.WithGuild(cfg.General.GuildID)
 	}

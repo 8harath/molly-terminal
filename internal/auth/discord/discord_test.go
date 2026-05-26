@@ -186,7 +186,7 @@ func TestExchangeCodeIgnoresClientSecretWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestRefreshIgnoresClientSecretWhenConfigured(t *testing.T) {
+func TestRefreshSendsClientSecretWhenConfigured(t *testing.T) {
 	var form url.Values
 	auth := &Authenticator{
 		ClientID:     "client-id",
@@ -248,8 +248,8 @@ func TestRefreshIgnoresClientSecretWhenConfigured(t *testing.T) {
 	if form.Get("client_id") != "client-id" {
 		t.Fatalf("expected client_id to be sent, got %q", form.Get("client_id"))
 	}
-	if form.Get("client_secret") != "" {
-		t.Fatalf("did not expect client_secret in CLI refresh request, got %q", form.Get("client_secret"))
+	if form.Get("client_secret") != "private-secret" {
+		t.Fatalf("expected client_secret in CLI refresh request, got %q", form.Get("client_secret"))
 	}
 }
 

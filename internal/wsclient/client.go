@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -37,6 +38,7 @@ type Client struct {
 	url         string
 	username    string
 	channel     string
+	apiKey      string
 	conn        *websocket.Conn
 	connMu      sync.Mutex
 	msgCh       chan model.Message
@@ -49,11 +51,12 @@ type Client struct {
 	log         *log.Logger
 }
 
-func New(url, username, channel string) *Client {
+func New(url, username, channel, apiKey string) *Client {
 	return &Client{
 		url:         url,
 		username:    username,
 		channel:     channel,
+		apiKey:      apiKey,
 		msgCh:       make(chan model.Message, 256),
 		typingCh:    make(chan model.TypingEvent, 32),
 		statusCh:    make(chan StatusChange, 16),
@@ -237,7 +240,12 @@ func (c *Client) dial() error {
 		HandshakeTimeout: 10 * time.Second,
 	}
 
-	conn, _, err := dialer.DialContext(context.Background(), c.url, nil)
+	header := make(http.Header)
+	if c.apiKey != "" {
+		header.Set("X-API-Key", c.apiKey)
+	}
+
+	conn, _, err := dialer.DialContext(context.Background(), c.url, header)
 	if err != nil {
 		return err
 	}

@@ -18,7 +18,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func TestNewClient(t *testing.T) {
-	c := New("wss://example.com/ws", "user", "general")
+	c := New("wss://example.com/ws", "user", "general", "")
 	if c.url != "wss://example.com/ws" {
 		t.Errorf("expected url 'wss://example.com/ws', got %q", c.url)
 	}
@@ -53,7 +53,7 @@ func TestClientConnectsAndReceivesMessages(t *testing.T) {
 	defer server.Close()
 
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
-	client := New(url, "user", "general")
+	client := New(url, "user", "general", "")
 
 	if err := client.Connect(); err != nil {
 		t.Fatalf("connect failed: %v", err)
@@ -115,7 +115,7 @@ func TestClientReconnection(t *testing.T) {
 
 	serverURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
 
-	client := New(serverURL, "user", "general")
+	client := New(serverURL, "user", "general", "")
 
 	done := make(chan struct{})
 	go func() {
@@ -170,7 +170,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 	defer server.Close()
 
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
-	client := New(url, "user", "general")
+	client := New(url, "user", "general", "")
 
 	if err := client.Connect(); err != nil {
 		t.Fatalf("connect failed: %v", err)
@@ -208,7 +208,7 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
-	client := New("wss://localhost/fake", "user", "general")
+	client := New("wss://localhost/fake", "user", "general", "")
 
 	_ = client.Close()
 	_ = client.Close()
@@ -234,7 +234,7 @@ func TestScaleBackoff(t *testing.T) {
 }
 
 func TestStatusChanges(t *testing.T) {
-	client := New("wss://localhost/fake", "user", "general")
+	client := New("wss://localhost/fake", "user", "general", "")
 
 	client.emitStatus(StatusConnected, nil)
 	client.emitStatus(StatusDisconnected, nil)
@@ -259,7 +259,7 @@ func TestStatusChanges(t *testing.T) {
 }
 
 func TestSubscribeReturnsErrorWhenNotConnected(t *testing.T) {
-	client := New("wss://localhost/fake", "user", "general")
+	client := New("wss://localhost/fake", "user", "general", "")
 	err := client.Subscribe("dev")
 	if err == nil {
 		t.Error("expected error when subscribing without connection")
@@ -267,7 +267,7 @@ func TestSubscribeReturnsErrorWhenNotConnected(t *testing.T) {
 }
 
 func TestUnsubscribeReturnsErrorWhenNotConnected(t *testing.T) {
-	client := New("wss://localhost/fake", "user", "general")
+	client := New("wss://localhost/fake", "user", "general", "")
 	err := client.Unsubscribe("dev")
 	if err == nil {
 		t.Error("expected error when unsubscribing without connection")

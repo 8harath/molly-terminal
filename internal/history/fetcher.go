@@ -16,6 +16,7 @@ const defaultLimit = 100
 
 type Fetcher struct {
 	baseURL    string
+	apiKey     string
 	guildID    string
 	httpClient *http.Client
 }
@@ -31,9 +32,10 @@ type ChannelsResultMsg struct {
 	Err      error
 }
 
-func New(baseURL string) *Fetcher {
+func New(baseURL, apiKey string) *Fetcher {
 	return &Fetcher{
 		baseURL: baseURL,
+		apiKey:  apiKey,
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
@@ -58,7 +60,15 @@ func (f *Fetcher) Fetch(channel string, limit int, before *time.Time) ([]model.M
 		url += fmt.Sprintf("&guild_id=%s", f.guildID)
 	}
 
-	resp, err := f.httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building history request: %w", err)
+	}
+	if f.apiKey != "" {
+		req.Header.Set("X-API-Key", f.apiKey)
+	}
+
+	resp, err := f.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching message history: %w", err)
 	}
@@ -88,7 +98,15 @@ func (f *Fetcher) FetchChannels() ([]string, error) {
 		url = fmt.Sprintf("%s/api/channels", f.baseURL)
 	}
 
-	resp, err := f.httpClient.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building channels request: %w", err)
+	}
+	if f.apiKey != "" {
+		req.Header.Set("X-API-Key", f.apiKey)
+	}
+
+	resp, err := f.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching channels: %w", err)
 	}
@@ -182,7 +200,14 @@ func (f *Fetcher) FetchSince(channel string, since time.Time) tea.Cmd {
 		if f.guildID != "" {
 			url += fmt.Sprintf("&guild_id=%s", f.guildID)
 		}
-		resp, err := f.httpClient.Get(url)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return FetchResultMsg{Channel: channel, Err: err}
+		}
+		if f.apiKey != "" {
+			req.Header.Set("X-API-Key", f.apiKey)
+		}
+		resp, err := f.httpClient.Do(req)
 		if err != nil {
 			return FetchResultMsg{Channel: channel, Err: err}
 		}

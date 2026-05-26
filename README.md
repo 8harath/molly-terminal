@@ -100,9 +100,24 @@ Override any field via env vars (`MOLLY_USERNAME`, `MOLLY_THEME`, etc.).
 
 ## Run locally
 
+To run Molly Terminal locally, you also need to clone and set up the relay backend.
+
+1. First, set up the relay server:
+```bash
+git clone https://github.com/ploglabs/molly-discord-relay.git
+cd molly-discord-relay
+cp .env.example .env
+# Edit .env with your Discord bot token and a strong API_KEY
+make build
+./bin/molly-discord-relay
+```
+
+2. Then, set up the terminal client in a new terminal window:
 ```bash
 git clone https://github.com/ploglabs/molly-terminal.git
 cd molly-terminal
+cp .env.example .env
+# Edit .env to set MOLLY_RELAY_API_KEY to match the relay's API_KEY
 make build          # → bin/molly
 ./bin/molly
 ```

@@ -270,9 +270,6 @@ func (c *Config) Save(path string) error {
 	return nil
 }
 
-func tomlDecodeFile(path string, cfg *Config) (interface{}, error) {
-	return toml.DecodeFile(path, cfg)
-}
 
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MOLLY_USERNAME"); v != "" {
@@ -290,7 +287,10 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MOLLY_RELAY_URL"); v != "" {
 		cfg.Server.RelayURL = v
 	}
-	if v := os.Getenv("MOLLY_API_KEY"); v != "" {
+	if v := os.Getenv("MOLLY_RELAY_API_KEY"); v != "" {
+		cfg.Server.APIKey = v
+	} else if v := os.Getenv("MOLLY_API_KEY"); v != "" {
+		// MOLLY_API_KEY is a legacy alias; MOLLY_RELAY_API_KEY is preferred.
 		cfg.Server.APIKey = v
 	}
 	if v := os.Getenv("MOLLY_AUTH_ENABLED"); v != "" {

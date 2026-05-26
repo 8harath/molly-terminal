@@ -225,7 +225,7 @@ func handlePickGuild(ctx context.Context, reader *bufio.Reader, auth *discord.Au
 	if state.FromWeb {
 		for _, g := range state.Guilds {
 			checkURL := fmt.Sprintf("%s/api/bot/check/%s", cfg.Server.RelayURL, g.ID)
-			if inGuild, err := pollBotPresence(ctx, checkURL); err == nil && inGuild {
+			if inGuild, err := pollBotPresence(ctx, checkURL, cfg.Server.APIKey); err == nil && inGuild {
 				botPresence[g.ID] = true
 			}
 		}
@@ -358,7 +358,7 @@ func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Con
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		fmt.Printf("\r  %s %s", dim("Verifying bot presence"), dim(fmt.Sprintf("[%d/%d]", attempt, maxAttempts)))
 
-		inGuild, err := pollBotPresence(ctx, checkURL)
+		inGuild, err := pollBotPresence(ctx, checkURL, cfg.Server.APIKey)
 		if err == nil && inGuild {
 			fmt.Println()
 			fmt.Printf("  %s\n", success("✓ Bot joined successfully!"))
@@ -401,10 +401,13 @@ func handleWaitForBot(ctx context.Context, reader *bufio.Reader, cfg *config.Con
 	return nil
 }
 
-func pollBotPresence(ctx context.Context, checkURL string) (bool, error) {
+func pollBotPresence(ctx context.Context, checkURL, apiKey string) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkURL, nil)
 	if err != nil {
 		return false, err
+	}
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -493,6 +496,9 @@ func fetchWebConfig(cfg *config.Config, state *WizardState) (*webSetupConfig, bo
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false
+	}
+	if cfg.Server.APIKey != "" {
+		req.Header.Set("X-API-Key", cfg.Server.APIKey)
 	}
 
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)

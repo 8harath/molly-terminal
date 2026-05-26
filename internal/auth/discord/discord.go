@@ -254,6 +254,11 @@ func (a *Authenticator) Refresh(ctx context.Context, refreshToken string) (*Sess
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", a.ClientID)
+	// Discord requires client_secret on refresh_token grants for confidential
+	// clients. Without it the token endpoint returns 401.
+	if a.ClientSecret != "" {
+		form.Set("client_secret", a.ClientSecret)
+	}
 
 	token, err := a.doTokenRequest(ctx, form)
 	if err != nil {

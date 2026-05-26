@@ -26,7 +26,7 @@ func makeMessages(n int, baseTime time.Time) []model.Message {
 }
 
 func TestNewFetcher(t *testing.T) {
-	f := New("https://relay.example.com")
+	f := New("https://relay.example.com", "")
 	if f.baseURL != "https://relay.example.com" {
 		t.Errorf("expected baseURL 'https://relay.example.com', got %q", f.baseURL)
 	}
@@ -36,7 +36,7 @@ func TestNewFetcher(t *testing.T) {
 }
 
 func TestNewFetcherWithEmptyURL(t *testing.T) {
-	f := New("")
+	f := New("", "")
 	if f.baseURL != "" {
 		t.Errorf("expected empty baseURL, got %q", f.baseURL)
 	}
@@ -58,7 +58,7 @@ func TestFetchSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	msgs, err := f.Fetch("general", 100, nil)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -90,7 +90,7 @@ func TestFetchWithBeforeCursor(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	msgs, err := f.Fetch("general", 100, &before)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -111,7 +111,7 @@ func TestFetchWithCustomLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	_, err := f.Fetch("general", 50, nil)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -129,7 +129,7 @@ func TestFetchChannelInURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	_, err := f.Fetch("dev", 100, nil)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -143,7 +143,7 @@ func TestFetchEmptyResult(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	msgs, err := f.Fetch("general", 100, nil)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -154,7 +154,7 @@ func TestFetchEmptyResult(t *testing.T) {
 }
 
 func TestFetchWithEmptyBaseURL(t *testing.T) {
-	f := New("")
+	f := New("", "")
 	msgs, err := f.Fetch("general", 100, nil)
 	if err != nil {
 		t.Fatalf("Fetch() with empty URL should not error, got: %v", err)
@@ -170,7 +170,7 @@ func TestFetchHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	_, err := f.Fetch("general", 100, nil)
 	if err == nil {
 		t.Fatal("expected error for HTTP 500 response")
@@ -183,7 +183,7 @@ func TestFetchForbiddenError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	_, err := f.Fetch("general", 100, nil)
 	if err == nil {
 		t.Fatal("expected error for HTTP 403 response")
@@ -191,7 +191,7 @@ func TestFetchForbiddenError(t *testing.T) {
 }
 
 func TestFetchConnectionError(t *testing.T) {
-	f := New("http://127.0.0.1:0")
+	f := New("http://127.0.0.1:0", "")
 	_, err := f.Fetch("general", 100, nil)
 	if err == nil {
 		t.Fatal("expected error for connection failure")
@@ -205,7 +205,7 @@ func TestFetchInvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	_, err := f.Fetch("general", 100, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
@@ -222,7 +222,7 @@ func TestFetchAsyncReturnsTeaMsg(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	cmd := f.FetchAsync("general", 100, nil)
 	if cmd == nil {
 		t.Fatal("expected non-nil tea.Cmd from FetchAsync")
@@ -250,7 +250,7 @@ func TestFetchAsyncErrorOnFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	cmd := f.FetchAsync("general", 100, nil)
 	msg := cmd()
 	result, ok := msg.(FetchResultMsg)
@@ -269,7 +269,7 @@ func TestInitialFetchWithValidFetcher(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	cmd := InitialFetch(f, "general", 100)
 	if cmd == nil {
 		t.Fatal("expected non-nil tea.Cmd from InitialFetch")
@@ -293,7 +293,7 @@ func TestInitialFetchWithNilFetcher(t *testing.T) {
 }
 
 func TestInitialFetchWithEmptyBaseURL(t *testing.T) {
-	f := New("")
+	f := New("", "")
 	cmd := InitialFetch(f, "general", 100)
 	if cmd != nil {
 		t.Error("expected nil tea.Cmd for empty base URL")
@@ -311,7 +311,7 @@ func TestInitialFetchWithZeroLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	cmd := InitialFetch(f, "general", 0)
 	if cmd == nil {
 		t.Fatal("expected non-nil tea.Cmd")
@@ -333,7 +333,7 @@ func TestLoadOlderWithValidFetcher(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	cmd := LoadOlder(f, "general", oldest)
 	if cmd == nil {
 		t.Fatal("expected non-nil tea.Cmd from LoadOlder")
@@ -360,7 +360,7 @@ func TestLoadOlderWithNilFetcher(t *testing.T) {
 }
 
 func TestLoadOlderWithEmptyBaseURL(t *testing.T) {
-	f := New("")
+	f := New("", "")
 	cmd := LoadOlder(f, "general", time.Now())
 	if cmd != nil {
 		t.Error("expected nil tea.Cmd for empty base URL")
@@ -395,7 +395,7 @@ func TestFetchMessageFieldsParsedCorrectly(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	msgs, err := f.Fetch("general", 100, nil)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -428,7 +428,7 @@ func TestFetchLargeBatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	msgs, err := f.Fetch("general", 100, nil)
 	if err != nil {
 		t.Fatalf("Fetch() error: %v", err)
@@ -452,7 +452,7 @@ func TestFetchChannelsFiltersToTextChannels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	f := New(server.URL)
+	f := New(server.URL, "")
 	channels, err := f.FetchChannels()
 	if err != nil {
 		t.Fatalf("FetchChannels() error: %v", err)
