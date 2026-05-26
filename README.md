@@ -98,6 +98,17 @@ image_protocol = "auto"    # auto, iterm2, kitty, none
 
 Override any field via env vars (`MOLLY_USERNAME`, `MOLLY_THEME`, etc.).
 
+## GitHub activity panel (optional)
+
+Set a repo in `[github]` to show a live activity sidebar (commits, PRs, issues), polled every 60 seconds:
+
+```toml
+[github]
+repo = "ploglabs/molly-terminal"
+```
+
+Public repos work without a token, but you'll hit GitHub's 60 req/hr unauthenticated limit fast. For private repos or higher rate limits, provide a [personal access token](https://github.com/settings/tokens) via the `MOLLY_GITHUB_TOKEN` env var. The token is stored in your OS keyring (macOS Keychain, Linux Secret Service, Windows Credential Manager) — never in `config.toml`. If you paste it into the file as a one-time bootstrap, Molly migrates it to the keyring and strips the plaintext line on next save.
+
 ## Run locally
 
 ```bash
