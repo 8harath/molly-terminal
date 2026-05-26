@@ -52,7 +52,7 @@ webhook_url = ""
 
 # Relay REST API base URL for fetching message history.
 # Optional — history fetching is disabled if this is empty.
-relay_url = "https://molly.ploglabs.com:8443"
+relay_url = "https://molly.ploglabs.com:8080"
 
 # Web setup wizard URL (used when choosing "web" setup during onboarding).
 # Defaults to https://molly.ploglabs.com. Override with MOLLY_WEB_SETUP_URL env var.

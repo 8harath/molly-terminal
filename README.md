@@ -84,7 +84,7 @@ username = "anon"          # overridden by Discord auth
 [server]
 websocket_url = "wss://molly.ploglabs.com:8443/ws"
 webhook_url = "https://discord.com/api/webhooks/..."
-relay_url = "https://molly.ploglabs.com:8443"
+relay_url = "https://molly.ploglabs.com:8080"
 
 [auth]
 enabled = true             # Discord OAuth2 login on first run
