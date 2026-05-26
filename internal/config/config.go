@@ -13,7 +13,10 @@ import (
 )
 
 type GithubConfig struct {
-	Token string `toml:"token"`
+	// Token is stored in the OS keyring, not the TOML file. A legacy plaintext
+	// value under `token = "..."` is read once for one-shot migration and then
+	// stripped from disk on the next Save (`omitempty` skips writing it back).
+	Token string `toml:"token,omitempty"`
 	Repo  string `toml:"repo"`
 }
 
@@ -21,6 +24,7 @@ const (
 	keyringService     = "molly"
 	keyringAccessToken = "access_token"
 	keyringRefreshTok  = "refresh_token"
+	keyringGithubToken = "github_token"
 )
 
 type Config struct {
@@ -227,14 +231,30 @@ func Load() (*Config, error) {
 	}
 
 	cfg.ApplyDefaults()
-	applyEnvOverrides(cfg)
 
-	// Load tokens from keyring
+	// Capture legacy plaintext token from TOML for one-shot migration to keyring.
+	legacyGithubToken := cfg.Github.Token
+	cfg.Github.Token = ""
+
+	// Keyring is the canonical store for secrets. Env vars (applied next) win.
 	if token, err := keyring.Get(keyringService, keyringAccessToken); err == nil {
 		cfg.Auth.Discord.AccessToken = token
 	}
 	if token, err := keyring.Get(keyringService, keyringRefreshTok); err == nil {
 		cfg.Auth.Discord.RefreshToken = token
+	}
+	if token, err := keyring.Get(keyringService, keyringGithubToken); err == nil {
+		cfg.Github.Token = token
+	}
+
+	applyEnvOverrides(cfg)
+
+	// If neither keyring nor env provided a token but TOML still carries the
+	// legacy plaintext value, migrate it: persist to keyring so the next Save
+	// strips it from disk.
+	if cfg.Github.Token == "" && legacyGithubToken != "" {
+		cfg.Github.Token = legacyGithubToken
+		_ = keyring.Set(keyringService, keyringGithubToken, legacyGithubToken)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -257,8 +277,14 @@ func (c *Config) Save(path string) error {
 	}
 	defer f.Close()
 
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
-		return fmt.Errorf("encoding config: %w", err)
+	// Strip secrets from the TOML view; keyring is canonical. Restore after
+	// encoding so callers continue to see the in-memory token.
+	githubToken := c.Github.Token
+	c.Github.Token = ""
+	encodeErr := toml.NewEncoder(f).Encode(c)
+	c.Github.Token = githubToken
+	if encodeErr != nil {
+		return fmt.Errorf("encoding config: %w", encodeErr)
 	}
 
 	// Save tokens to keyring
@@ -271,6 +297,11 @@ func (c *Config) Save(path string) error {
 		_ = keyring.Set(keyringService, keyringRefreshTok, c.Auth.Discord.RefreshToken)
 	} else {
 		_ = keyring.Delete(keyringService, keyringRefreshTok)
+	}
+	if c.Github.Token != "" {
+		_ = keyring.Set(keyringService, keyringGithubToken, c.Github.Token)
+	} else {
+		_ = keyring.Delete(keyringService, keyringGithubToken)
 	}
 
 	return nil
