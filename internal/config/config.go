@@ -17,6 +17,12 @@ type GithubConfig struct {
 	Repo  string `toml:"repo"`
 }
 
+const (
+	keyringService     = "molly"
+	keyringAccessToken = "access_token"
+	keyringRefreshTok  = "refresh_token"
+)
+
 type Config struct {
 	General          GeneralConfig `toml:"general"`
 	Server           ServerConfig  `toml:"server"`
@@ -224,10 +230,10 @@ func Load() (*Config, error) {
 	applyEnvOverrides(cfg)
 
 	// Load tokens from keyring
-	if token, err := keyring.Get("molly", "access_token"); err == nil {
+	if token, err := keyring.Get(keyringService, keyringAccessToken); err == nil {
 		cfg.Auth.Discord.AccessToken = token
 	}
-	if token, err := keyring.Get("molly", "refresh_token"); err == nil {
+	if token, err := keyring.Get(keyringService, keyringRefreshTok); err == nil {
 		cfg.Auth.Discord.RefreshToken = token
 	}
 
@@ -257,14 +263,14 @@ func (c *Config) Save(path string) error {
 
 	// Save tokens to keyring
 	if c.Auth.Discord.AccessToken != "" {
-		_ = keyring.Set("molly", "access_token", c.Auth.Discord.AccessToken)
+		_ = keyring.Set(keyringService, keyringAccessToken, c.Auth.Discord.AccessToken)
 	} else {
-		_ = keyring.Delete("molly", "access_token")
+		_ = keyring.Delete(keyringService, keyringAccessToken)
 	}
 	if c.Auth.Discord.RefreshToken != "" {
-		_ = keyring.Set("molly", "refresh_token", c.Auth.Discord.RefreshToken)
+		_ = keyring.Set(keyringService, keyringRefreshTok, c.Auth.Discord.RefreshToken)
 	} else {
-		_ = keyring.Delete("molly", "refresh_token")
+		_ = keyring.Delete(keyringService, keyringRefreshTok)
 	}
 
 	return nil
