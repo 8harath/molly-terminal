@@ -3,13 +3,13 @@ package config
 import (
 	"flag"
 	"fmt"
+	"github.com/BurntSushi/toml"
+	"github.com/zalando/go-keyring"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"time"
-	"github.com/BurntSushi/toml"
-	"github.com/zalando/go-keyring"
 )
 
 type GithubConfig struct {

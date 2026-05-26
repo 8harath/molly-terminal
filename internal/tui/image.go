@@ -25,7 +25,7 @@ import (
 type ImageProtocol int
 
 const (
-	ProtocolNone   ImageProtocol = iota
+	ProtocolNone ImageProtocol = iota
 	ProtocolITerm2
 	ProtocolKitty
 	ProtocolSixel // external tool (chafa / viu)

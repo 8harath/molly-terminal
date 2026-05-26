@@ -40,4 +40,3 @@ func (c *GlobalCmd) Execute(args []string) (tea.Cmd, error) {
 }
 
 type GlobalDiscoverMsg struct{}
-

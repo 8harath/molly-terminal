@@ -315,7 +315,6 @@ func TestSentWebsocketMessageReplacesLocalEcho(t *testing.T) {
 	}
 }
 
-
 func openTUITestStore(t *testing.T) *db.Store {
 	t.Helper()
 	store, err := db.New(filepath.Join(t.TempDir(), "molly.db"))

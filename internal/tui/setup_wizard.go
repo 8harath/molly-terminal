@@ -89,7 +89,7 @@ func fetchDiscordGuilds(accessToken string) ([]setupGuild, error) {
 }
 
 const (
-	setupPermAdmin      = 0x8
+	setupPermAdmin       = 0x8
 	setupPermManageGuild = 0x20
 )
 
@@ -102,7 +102,7 @@ func filterAdminGuilds(guilds []setupGuild) []setupGuild {
 		}
 		var perms int64
 		fmt.Sscanf(g.Permissions, "%d", &perms)
-		if (perms & setupPermAdmin) != 0 || (perms & setupPermManageGuild) != 0 {
+		if (perms&setupPermAdmin) != 0 || (perms&setupPermManageGuild) != 0 {
 			filtered = append(filtered, g)
 		}
 	}

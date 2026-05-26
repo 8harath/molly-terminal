@@ -137,11 +137,11 @@ type Model struct {
 	githubEvents      []GithubActivityEvent
 	githubLastFetch   time.Time
 
-	errors           []trackedError
-	errorsVisible    bool
-	errorFocused     bool
-	errorScrollIdx   int
-	errorScrollOff   int
+	errors         []trackedError
+	errorsVisible  bool
+	errorFocused   bool
+	errorScrollIdx int
+	errorScrollOff int
 
 	helpVisible      bool
 	configuredGuilds []config.GuildEntry
@@ -188,22 +188,22 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		setupConfigPath:    setupConfigPath,
 		setupCfg:           setupCfg,
 		channels:           channels,
-		available:         make(map[string]struct{}),
-		status:            wsclient.StatusDisconnected,
-		lastSendOk:        true,
-		loadingHistory:    false,
-		historyLoaded:     false,
-		allHistoryLoaded:  false,
-		input:             newInput("> "),
-		channelsVisible:   true,
-		usersVisible:      true,
-		notifVisible:      true,
-		notifications:     notifications,
-		typingUsers:       make(map[string]time.Time),
-		sentHashes:        make(map[string]time.Time),
-		presences:         make(map[string]model.UserPresence),
-		log:               log.New(io.Discard, "", 0),
-		version:           version,
+		available:          make(map[string]struct{}),
+		status:             wsclient.StatusDisconnected,
+		lastSendOk:         true,
+		loadingHistory:     false,
+		historyLoaded:      false,
+		allHistoryLoaded:   false,
+		input:              newInput("> "),
+		channelsVisible:    true,
+		usersVisible:       true,
+		notifVisible:       true,
+		notifications:      notifications,
+		typingUsers:        make(map[string]time.Time),
+		sentHashes:         make(map[string]time.Time),
+		presences:          make(map[string]model.UserPresence),
+		log:                log.New(io.Discard, "", 0),
+		version:            version,
 	}
 }
 
@@ -216,30 +216,30 @@ func (m Model) checkUpdates() tea.Cmd {
 		if m.version == "dev" || m.version == "" {
 			return nil
 		}
-		
+
 		req, err := http.NewRequest("GET", "https://api.github.com/repos/ploglabs/molly-terminal/releases/latest", nil)
 		if err != nil {
 			return nil
 		}
-		
+
 		client := &http.Client{Timeout: 5 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil
 		}
 		defer resp.Body.Close()
-		
+
 		if resp.StatusCode != http.StatusOK {
 			return nil
 		}
-		
+
 		var release struct {
 			TagName string `json:"tag_name"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 			return nil
 		}
-		
+
 		return updateCheckMsg{latestVersion: release.TagName}
 	}
 }
@@ -1171,14 +1171,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 			}
-		cmd, err := m.registry.Execute(cmdName, args)
-		if err != nil {
-			sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
-			m.msgs = append(m.msgs, sysMsg)
-			m.scrollOffset = 0
-			m.addError(fmt.Sprintf("command /%s: %v", cmdName, err))
-			return m, nil
-		}
+			cmd, err := m.registry.Execute(cmdName, args)
+			if err != nil {
+				sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
+				m.msgs = append(m.msgs, sysMsg)
+				m.scrollOffset = 0
+				m.addError(fmt.Sprintf("command /%s: %v", cmdName, err))
+				return m, nil
+			}
 			return m, cmd
 		}
 
@@ -1453,10 +1453,18 @@ func (m Model) View() string {
 	if m.isSetupVisible() {
 		modalW := m.width * 70 / 100
 		modalH := m.height * 60 / 100
-		if modalW < 50 { modalW = 50 }
-		if modalW > m.width-6 { modalW = m.width - 6 }
-		if modalH < 12 { modalH = 12 }
-		if modalH > m.height-4 { modalH = m.height - 4 }
+		if modalW < 50 {
+			modalW = 50
+		}
+		if modalW > m.width-6 {
+			modalW = m.width - 6
+		}
+		if modalH < 12 {
+			modalH = 12
+		}
+		if modalH > m.height-4 {
+			modalH = m.height - 4
+		}
 		return centerInTerm(m.renderSetupWizard(modalW, modalH), modalW, modalH, m.width, m.height)
 	}
 
@@ -2807,7 +2815,6 @@ func (m *Model) prevChannel() {
 	}
 	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
 }
-
 
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {
 	for _, existing := range msgs {
