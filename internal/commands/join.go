@@ -5,19 +5,12 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ploglabs/molly-terminal/internal/db"
-	"github.com/ploglabs/molly-terminal/internal/history"
-	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
-type JoinCmd struct {
-	client  *wsclient.Client
-	fetcher *history.Fetcher
-	store   *db.Store
-}
+type JoinCmd struct{}
 
-func NewJoinCmd(client *wsclient.Client, fetcher *history.Fetcher, store *db.Store) *JoinCmd {
-	return &JoinCmd{client: client, fetcher: fetcher, store: store}
+func NewJoinCmd() *JoinCmd {
+	return &JoinCmd{}
 }
 
 func (c *JoinCmd) Name() string {
