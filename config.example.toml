@@ -118,3 +118,12 @@ token = ""
 
 # Repository to track, in "owner/repo" format. Example: "ploglabs/molly-terminal".
 repo = ""
+
+# ── Notifications ──────────────────────────────────────────────────────────
+[notifications]
+# Ring the terminal bell when you are @-mentioned (in a non-muted channel).
+bell_on_mention = false
+
+# Channels for which mention notifications (and the bell) are suppressed.
+# Case-insensitive. Example: muted_channels = ["bots", "ci-spam"]
+muted_channels = []

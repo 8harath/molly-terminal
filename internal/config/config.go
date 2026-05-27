@@ -18,12 +18,22 @@ type GithubConfig struct {
 }
 
 type Config struct {
-	General          GeneralConfig `toml:"general"`
-	Server           ServerConfig  `toml:"server"`
-	Auth             AuthConfig    `toml:"auth"`
-	UI               UIConfig      `toml:"ui"`
-	Github           GithubConfig  `toml:"github"`
-	ConfiguredGuilds []GuildEntry  `toml:"configured_guilds"`
+	General          GeneralConfig      `toml:"general"`
+	Server           ServerConfig       `toml:"server"`
+	Auth             AuthConfig         `toml:"auth"`
+	UI               UIConfig           `toml:"ui"`
+	Github           GithubConfig       `toml:"github"`
+	Notifications    NotificationConfig `toml:"notifications"`
+	ConfiguredGuilds []GuildEntry       `toml:"configured_guilds"`
+}
+
+type NotificationConfig struct {
+	// BellOnMention emits the terminal bell when you are @-mentioned in a
+	// channel that isn't muted.
+	BellOnMention bool `toml:"bell_on_mention"`
+	// MutedChannels suppresses mention notifications (and the bell) for the
+	// listed channel names. Case-insensitive.
+	MutedChannels []string `toml:"muted_channels"`
 }
 
 type GeneralConfig struct {

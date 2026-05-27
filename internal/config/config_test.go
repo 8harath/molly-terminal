@@ -193,6 +193,48 @@ func TestEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadNotificationsConfig(t *testing.T) {
+	clearConfigEnvVars()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+
+	content := `
+[general]
+username = "testuser"
+
+[server]
+websocket_url = "wss://relay.test.com/ws"
+webhook_url = "https://discord.com/api/webhooks/123/token"
+
+[notifications]
+bell_on_mention = true
+muted_channels = ["bots", "ci-spam"]
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatalf("writing test config: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"molly", "--config", cfgPath}
+	defer func() { os.Args = origArgs }()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Notifications.BellOnMention {
+		t.Error("expected bell_on_mention to be true")
+	}
+	if len(cfg.Notifications.MutedChannels) != 2 {
+		t.Fatalf("expected 2 muted channels, got %d", len(cfg.Notifications.MutedChannels))
+	}
+	if cfg.Notifications.MutedChannels[0] != "bots" {
+		t.Errorf("expected first muted channel 'bots', got %q", cfg.Notifications.MutedChannels[0])
+	}
+}
+
 func TestEnvOverridesInvalidHistoryLimit(t *testing.T) {
 	cfg := Default()
 
