@@ -3,13 +3,14 @@ package config
 import (
 	"flag"
 	"fmt"
-	"github.com/BurntSushi/toml"
-	"github.com/zalando/go-keyring"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/ploglabs/molly-terminal/internal/network/credstore"
 )
 
 type GithubConfig struct {
@@ -25,6 +26,41 @@ type Config struct {
 	Github           GithubConfig       `toml:"github"`
 	Notifications    NotificationConfig `toml:"notifications"`
 	ConfiguredGuilds []GuildEntry       `toml:"configured_guilds"`
+	Networks         []NetworkConfig    `toml:"networks"`
+}
+
+// NetworkConfig describes one chat network connection. Discord is implicit via
+// the legacy [auth.discord]/[server] blocks; additional networks (Matrix, ...)
+// are configured as [[networks]] entries. Secrets live in the OS keyring, not
+// here.
+type NetworkConfig struct {
+	ID      string `toml:"id"`
+	Type    string `toml:"type"`
+	Enabled bool   `toml:"enabled"`
+	// Matrix-specific (non-secret).
+	Homeserver string `toml:"homeserver,omitempty"`
+	UserID     string `toml:"user_id,omitempty"`
+}
+
+// EnabledNetworks returns the configured networks, synthesizing the implicit
+// Discord entry when no explicit [[networks]] are present. This keeps existing
+// single-network configs working untouched.
+func (c *Config) EnabledNetworks() []NetworkConfig {
+	var out []NetworkConfig
+	hasDiscord := false
+	for _, n := range c.Networks {
+		if !n.Enabled {
+			continue
+		}
+		if n.Type == "discord" || n.ID == "discord" {
+			hasDiscord = true
+		}
+		out = append(out, n)
+	}
+	if !hasDiscord && c.UsesDiscordAuth() {
+		out = append([]NetworkConfig{{ID: "discord", Type: "discord", Enabled: true}}, out...)
+	}
+	return out
 }
 
 type NotificationConfig struct {
@@ -194,6 +230,37 @@ func GuildDBPath(guildID string) (string, error) {
 	return filepath.Join(dir, "servers", guildID+".db"), nil
 }
 
+// NetworkDBPath returns the local SQLite path for a (network, server) pair.
+// Discord preserves the historical servers/<id>.db layout for continuity;
+// other networks are isolated under <network>/<server>.db.
+func NetworkDBPath(networkID, serverID string) (string, error) {
+	if networkID == "" || networkID == "discord" {
+		return GuildDBPath(serverID)
+	}
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	name := serverID
+	if name == "" {
+		name = "default"
+	}
+	return filepath.Join(dir, networkID, name+".db"), nil
+}
+
+// NetworkStatePath returns a file path for a network adapter's non-DB state
+// (e.g. the Matrix /sync token cache).
+func NetworkStatePath(networkID, name string) (string, error) {
+	dir, err := dataDir()
+	if err != nil {
+		return "", err
+	}
+	if name == "" {
+		name = "state"
+	}
+	return filepath.Join(dir, networkID, name+".json"), nil
+}
+
 func ConfigPathFromArgs(args []string) (string, error) {
 	configPath := ""
 
@@ -233,11 +300,13 @@ func Load() (*Config, error) {
 	cfg.ApplyDefaults()
 	applyEnvOverrides(cfg)
 
-	// Load tokens from keyring
-	if token, err := keyring.Get("molly", "access_token"); err == nil {
+	// Load Discord tokens from the keyring, migrating any legacy un-namespaced
+	// entries into the "molly-discord" namespace first.
+	_ = credstore.MigrateLegacyDiscord()
+	if token, err := credstore.Get("discord", "access_token"); err == nil {
 		cfg.Auth.Discord.AccessToken = token
 	}
-	if token, err := keyring.Get("molly", "refresh_token"); err == nil {
+	if token, err := credstore.Get("discord", "refresh_token"); err == nil {
 		cfg.Auth.Discord.RefreshToken = token
 	}
 
@@ -265,21 +334,20 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 
-	// Save tokens to keyring
+	// Save Discord tokens to the network-namespaced keyring.
 	if c.Auth.Discord.AccessToken != "" {
-		_ = keyring.Set("molly", "access_token", c.Auth.Discord.AccessToken)
+		_ = credstore.Set("discord", "access_token", c.Auth.Discord.AccessToken)
 	} else {
-		_ = keyring.Delete("molly", "access_token")
+		_ = credstore.Delete("discord", "access_token")
 	}
 	if c.Auth.Discord.RefreshToken != "" {
-		_ = keyring.Set("molly", "refresh_token", c.Auth.Discord.RefreshToken)
+		_ = credstore.Set("discord", "refresh_token", c.Auth.Discord.RefreshToken)
 	} else {
-		_ = keyring.Delete("molly", "refresh_token")
+		_ = credstore.Delete("discord", "refresh_token")
 	}
 
 	return nil
 }
-
 
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("MOLLY_USERNAME"); v != "" {
@@ -361,15 +429,22 @@ func (c *Config) Validate() error {
 	if c.Server.WebhookURL == "" && c.Server.RelayURL == "" {
 		return fmt.Errorf("missing server.webhook_url and server.relay_url — set at least one in config")
 	}
-	if c.Auth.Enabled {
-		if c.Auth.Provider != "discord" {
-			return fmt.Errorf("unsupported auth.provider %q — currently only \"discord\" is supported", c.Auth.Provider)
-		}
+	// Discord auth is validated when selected. Other networks authenticate via
+	// their own [[networks]] entries and are validated by their adapters.
+	if c.Auth.Enabled && c.Auth.Provider == "discord" {
 		if c.Auth.Discord.ClientID == "" {
 			return fmt.Errorf("missing auth.discord.client_id — set it in config, or use MOLLY_DISCORD_CLIENT_ID env var")
 		}
 		if c.Auth.Discord.RedirectURL == "" {
 			return fmt.Errorf("missing auth.discord.redirect_url — set it in config, or use MOLLY_DISCORD_REDIRECT_URL env var")
+		}
+	}
+	for _, n := range c.Networks {
+		if n.ID == "" {
+			return fmt.Errorf("each [[networks]] entry needs an id")
+		}
+		if n.Type == "" {
+			return fmt.Errorf("network %q needs a type", n.ID)
 		}
 	}
 	return nil
