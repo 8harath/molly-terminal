@@ -441,6 +441,121 @@ func TestSearchMessagesLimit100(t *testing.T) {
 	}
 }
 
+func TestSearchMessagesPrefixMatch(t *testing.T) {
+	store := openTestStore(t)
+
+	msg := model.Message{
+		ID:        "msg-1",
+		Username:  "user",
+		Content:   "the deployment finished successfully",
+		Channel:   "general",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := store.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage() error: %v", err)
+	}
+
+	// A prefix of a token should match the full token (FTS5 prefix query).
+	results, err := store.SearchMessages("deploy")
+	if err != nil {
+		t.Fatalf("SearchMessages() error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 prefix-match result for 'deploy', got %d", len(results))
+	}
+}
+
+func TestSearchMessagesPunctuationDoesNotError(t *testing.T) {
+	store := openTestStore(t)
+
+	msg := model.Message{
+		ID:        "msg-1",
+		Username:  "user",
+		Content:   "hello world",
+		Channel:   "general",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := store.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage() error: %v", err)
+	}
+
+	// Punctuation-only / FTS-syntax-heavy queries must not hard-fail; they
+	// fall back to a LIKE scan.
+	for _, q := range []string{`"""`, `* AND (`, `:::`, `foo"bar`} {
+		if _, err := store.SearchMessages(q); err != nil {
+			t.Errorf("SearchMessages(%q) should not error, got: %v", q, err)
+		}
+	}
+}
+
+func TestSearchMessagesUpdatedContent(t *testing.T) {
+	store := openTestStore(t)
+
+	msg := model.Message{
+		ID:        "msg-1",
+		Username:  "user",
+		Content:   "original text",
+		Channel:   "general",
+		Timestamp: time.Now().UTC(),
+	}
+	if err := store.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage() error: %v", err)
+	}
+
+	msg.Content = "edited zebra content"
+	if err := store.UpdateMessage(msg); err != nil {
+		t.Fatalf("UpdateMessage() error: %v", err)
+	}
+
+	// The FTS index must reflect the edit: old token gone, new token findable.
+	if results, err := store.SearchMessages("original"); err != nil {
+		t.Fatalf("SearchMessages() error: %v", err)
+	} else if len(results) != 0 {
+		t.Errorf("expected stale token 'original' to be unindexed, got %d results", len(results))
+	}
+	if results, err := store.SearchMessages("zebra"); err != nil {
+		t.Fatalf("SearchMessages() error: %v", err)
+	} else if len(results) != 1 {
+		t.Errorf("expected edited token 'zebra' to be findable, got %d results", len(results))
+	}
+}
+
+func TestMigrateFTSBackfillsExistingRows(t *testing.T) {
+	store := openTestStore(t)
+
+	// Simulate a database created before the FTS index existed: drop the
+	// index objects and insert a row directly so the triggers don't fire.
+	for _, stmt := range []string{
+		`DROP TRIGGER IF EXISTS messages_fts_ai`,
+		`DROP TRIGGER IF EXISTS messages_fts_ad`,
+		`DROP TRIGGER IF EXISTS messages_fts_au`,
+		`DROP TABLE IF EXISTS messages_fts`,
+	} {
+		if _, err := store.db.Exec(stmt); err != nil {
+			t.Fatalf("tearing down FTS: %v", err)
+		}
+	}
+	if _, err := store.db.Exec(
+		`INSERT INTO messages (id, username, content, channel, timestamp, attachments_json, editable) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-1", "user", "preexisting platypus message", "general", time.Now().UTC(), "", 0,
+	); err != nil {
+		t.Fatalf("inserting legacy row: %v", err)
+	}
+
+	// Re-running the migration should backfill the pre-existing row.
+	if err := migrateFTS(store.db); err != nil {
+		t.Fatalf("migrateFTS() error: %v", err)
+	}
+
+	results, err := store.SearchMessages("platypus")
+	if err != nil {
+		t.Fatalf("SearchMessages() error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected backfilled row to be searchable, got %d results", len(results))
+	}
+}
+
 func TestInsertChannel(t *testing.T) {
 	store := openTestStore(t)
 
