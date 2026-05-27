@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,24 +25,16 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/model"
+	"github.com/ploglabs/molly-terminal/internal/network"
 	"github.com/ploglabs/molly-terminal/internal/webhook"
-	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
-type wsMsg model.Message
-
-type wsStatusMsg struct {
-	Status wsclient.Status
-	Err    error
-}
-
-type typingEventMsg model.TypingEvent
+// networkEventMsg carries one event from any network adapter into the
+// bubbletea Update loop. Exactly one listenNetwork command is in flight per
+// adapter at a time; each event handled re-arms that adapter's listener.
+type networkEventMsg network.Event
 
 type typingTickMsg struct{}
-
-type presenceMsg model.UserPresence
-
-type terminalUsersMsg []string
 
 type dbWriteResultMsg struct {
 	Err error
@@ -79,14 +72,13 @@ type Model struct {
 	width  int
 	height int
 
-	client   *wsclient.Client
-	sender   *webhook.Sender
+	adapters map[network.NetworkID]network.Network
+	active   network.NetworkID
 	store    *db.Store
-	fetcher  *history.Fetcher
 	registry *commands.Registry
 
 	msgs       []model.Message
-	status     wsclient.Status
+	status     network.ConnState
 	channel    string
 	username   string
 	channels   []string
@@ -157,7 +149,7 @@ type Model struct {
 	version            string
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName, guildName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config, version string) Model {
+func New(adapters []network.Network, active network.NetworkID, store *db.Store, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName, guildName string, configuredGuilds []config.GuildEntry, discordAccessToken, discordClientID string, setupConfigPath string, setupCfg *config.Config, version string) Model {
 	channels := []string{channel}
 	var notifications []model.Notification
 	if store != nil {
@@ -170,11 +162,18 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		}
 	}
 
+	adapterMap := make(map[network.NetworkID]network.Network, len(adapters))
+	for _, a := range adapters {
+		adapterMap[a.ID()] = a
+	}
+	if active == "" && len(adapters) > 0 {
+		active = adapters[0].ID()
+	}
+
 	return Model{
-		client:             client,
-		sender:             sender,
+		adapters:           adapterMap,
+		active:             active,
 		store:              store,
-		fetcher:            fetcher,
 		registry:           registry,
 		channel:            channel,
 		username:           username,
@@ -189,7 +188,7 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		setupCfg:           setupCfg,
 		channels:           channels,
 		available:          make(map[string]struct{}),
-		status:             wsclient.StatusDisconnected,
+		status:             network.StateDisconnected,
 		lastSendOk:         true,
 		loadingHistory:     false,
 		historyLoaded:      false,
@@ -245,20 +244,20 @@ func (m Model) checkUpdates() tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
-		m.listenMessages(),
-		m.listenStatus(),
-		m.listenTyping(),
-		m.listenPresence(),
-		m.listenTerminalUsers(),
-		history.FetchChannels(m.fetcher),
+	cmds := make([]tea.Cmd, 0, len(m.adapters)+8)
+	for id := range m.adapters {
+		cmds = append(cmds, m.listenNetwork(id))
+	}
+	cmds = append(cmds,
+		m.fetchChannelsCmd(),
 		m.loadLocalHistory(m.channel, 100),
-		history.InitialFetch(m.fetcher, m.channel, 100),
+		m.initialFetchCmd(m.channel, 100),
 		m.checkUpdates(),
 		m.input.CursorBlinkCmd(),
 		periodicRefreshCmd(),
 		m.githubPollCmd(),
 	)
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -281,9 +280,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sysMsg := commands.SystemMsg("restarting in server setup mode — molly will reopen the setup wizard")
 		m.msgs = append(m.msgs, sysMsg)
 		m.scrollOffset = 0
-		if m.client != nil {
-			_ = m.client.Close()
-		}
+		m.closeAdapters()
 		if m.setupConfigPath != "" {
 			_ = os.WriteFile(m.setupConfigPath+".setup-flag", []byte("1"), 0o644)
 		}
@@ -293,9 +290,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sysMsg := commands.SystemMsg("exiting to server selection...")
 		m.msgs = append(m.msgs, sysMsg)
 		m.scrollOffset = 0
-		if m.client != nil {
-			_ = m.client.Close()
-		}
+		m.closeAdapters()
 		if m.setupConfigPath != "" {
 			_ = os.WriteFile(m.setupConfigPath+".servers-flag", []byte("1"), 0o644)
 		}
@@ -305,9 +300,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sysMsg := commands.SystemMsg("exiting to discover servers...")
 		m.msgs = append(m.msgs, sysMsg)
 		m.scrollOffset = 0
-		if m.client != nil {
-			_ = m.client.Close()
-		}
+		m.closeAdapters()
 		if m.setupConfigPath != "" {
 			_ = os.WriteFile(m.setupConfigPath+".global-flag", []byte("1"), 0o644)
 		}
@@ -333,103 +326,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case wsMsg:
-		m.addChannel(msg.Channel)
-
-		if msg.EventType == "message_update" {
-			updated := model.Message(msg)
-			if applied := m.applyMessageUpdate(updated); applied != nil {
-				m.users = msgsToUsers(m.msgs)
-				updated = *applied
+	case networkEventMsg:
+		ev := network.Event(msg)
+		var cmds []tea.Cmd
+		switch ev.Kind {
+		case network.EventMessage:
+			if ev.Message != nil {
+				m, cmds = m.onMessageEvent(*ev.Message)
 			}
-			batch := []tea.Cmd{m.listenMessages(), m.persistMessageUpdate(updated)}
-			return m, tea.Batch(batch...)
-		}
-
-		// Check for @mention — only notify if not from self and the channel
-		// isn't muted.
-		var notifCmd tea.Cmd
-		if !m.isSelfMessage(msg) && containsMentionExact(msg.Content, m.username) && !m.isChannelMuted(msg.Channel) {
-			n := model.Notification{
-				Channel:   msg.Channel,
-				Username:  msg.Username,
-				Content:   msg.Content,
-				Timestamp: msg.Timestamp,
-				MsgID:     msg.ID,
+		case network.EventStatus:
+			m, cmds = m.onStatusEvent(ev.State, ev.Err)
+		case network.EventTyping:
+			if ev.Typing != nil {
+				m, cmds = m.onTypingEvent(*ev.Typing)
 			}
-			m.notifications = append(m.notifications, n)
-			notifCmd = m.persistNotification(n)
-			if m.bellOnMention() {
-				notifCmd = tea.Batch(notifCmd, bellCmd())
+		case network.EventPresence:
+			if ev.Presence != nil {
+				m, cmds = m.onPresenceEvent(*ev.Presence)
 			}
+		case network.EventPresentUsers:
+			m, cmds = m.onPresentUsers(ev.Users)
+		case network.EventChannelList:
+			// reserved: adapters that push topology updates land here
 		}
-
-		if msg.Channel != m.channel {
-			batch := []tea.Cmd{m.listenMessages(), m.persistMessage(model.Message(msg))}
-			if notifCmd != nil {
-				batch = append(batch, notifCmd)
-			}
-			return m, tea.Batch(batch...)
-		}
-		// Try dedup with message's username and all known self aliases.
-		serverMsg := model.Message(msg)
-		if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
-			var reconciled bool
-			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
-			if !reconciled {
-				m.msgs = insertSorted(m.msgs, serverMsg)
-			}
-			m.users = msgsToUsers(m.msgs)
-			return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
-		}
-		// No sentHash match — still try to reconcile a local echo (e.g. file
-		// messages, which don't register sentHashes).
-		if m.isSelfMessage(msg) {
-			var reconciled bool
-			m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
-			if reconciled {
-				m.users = msgsToUsers(m.msgs)
-				return m, tea.Batch(m.listenMessages(), m.persistMessage(serverMsg))
-			}
-		}
-		m.msgs = insertSorted(m.msgs, model.Message(msg))
-		if len(m.msgs) > 1000 {
-			m.msgs = m.msgs[len(m.msgs)-1000:]
-		}
-		m.users = msgsToUsers(m.msgs)
-		if m.scrollOffset > 0 {
-			m.unreadCount++
-		} else {
-			m.scrollOffset = 0
-		}
-		batch := []tea.Cmd{m.listenMessages(), m.persistMessage(model.Message(msg))}
-		if notifCmd != nil {
-			batch = append(batch, notifCmd)
-		}
-		return m, tea.Batch(batch...)
-
-	case wsStatusMsg:
-		m.status = msg.Status
-		if msg.Err != nil {
-			m.addError(fmt.Sprintf("connection: %v", msg.Err))
-		}
-		if msg.Status == wsclient.StatusConnected {
-			m.errors = nil
-			if m.channel != "" {
-				return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
-			}
-		}
-		return m, m.listenStatus()
-
-	case typingEventMsg:
-		m.addChannel(msg.Channel)
-		if msg.Channel == m.channel || msg.Channel == "" {
-			if m.typingUsers == nil {
-				m.typingUsers = make(map[string]time.Time)
-			}
-			m.typingUsers[msg.Username] = time.Now()
-		}
-		return m, tea.Batch(m.listenTyping(), typingTickCmd())
+		cmds = append(cmds, m.listenNetwork(ev.Network))
+		return m, tea.Batch(cmds...)
 
 	case typingTickMsg:
 		now := time.Now()
@@ -448,10 +369,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, typingTickCmd())
 		}
 		return m, tea.Batch(cmds...)
-
-	case terminalUsersMsg:
-		m.terminalOnline = []string(msg)
-		return m, m.listenTerminalUsers()
 
 	case history.ChannelsResultMsg:
 		if msg.Err != nil {
@@ -488,7 +405,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			cmds = append(cmds, m.subscribeSwitchCmd(oldChannel, m.channel))
 			cmds = append(cmds, m.loadLocalHistory(m.channel, 100))
-			cmds = append(cmds, history.InitialFetch(m.fetcher, m.channel, 100))
+			cmds = append(cmds, m.initialFetchCmd(m.channel, 100))
 			return m, tea.Batch(cmds...)
 		}
 		return m, nil
@@ -624,7 +541,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds = append(cmds, m.subscribeSwitchCmd(oldChannel, msg.Channel))
 		cmds = append(cmds, m.loadLocalHistory(msg.Channel, 100))
-		cmds = append(cmds, history.InitialFetch(m.fetcher, msg.Channel, 100))
+		cmds = append(cmds, m.initialFetchCmd(msg.Channel, 100))
 
 		return m, tea.Batch(cmds...)
 
@@ -664,7 +581,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.msgs = append(m.msgs, sysMsg)
 			cmds = append(cmds, m.subscribeSwitchCmd(chName, newChannel))
 			cmds = append(cmds, m.loadLocalHistory(newChannel, 100))
-			cmds = append(cmds, history.InitialFetch(m.fetcher, newChannel, 100))
+			cmds = append(cmds, m.initialFetchCmd(newChannel, 100))
 		} else {
 			sysMsg := commands.SystemMsg(fmt.Sprintf("removed #%s from channels", chName))
 			m.msgs = append(m.msgs, sysMsg)
@@ -678,16 +595,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loadingHistory = true
 		oldest := m.msgs[0].Timestamp
-		return m, history.LoadOlder(m.fetcher, m.channel, oldest)
-
-	case presenceMsg:
-		p := model.UserPresence(msg)
-		m.presences[p.Username] = p
-		if m.store != nil {
-			store := m.store
-			go func() { _ = store.UpsertPresence(p) }()
-		}
-		return m, m.listenPresence()
+		return m, m.loadOlderCmd(m.channel, oldest)
 
 	case commands.SendRawMsg:
 		return m, m.SendMessage(msg.Content, m.channel, "")
@@ -708,9 +616,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sysMsg := commands.SystemMsg("logged out — restart molly to re-authenticate")
 		m.msgs = append(m.msgs, sysMsg)
 		m.scrollOffset = 0
-		if m.client != nil {
-			_ = m.client.Close()
-		}
+		m.closeAdapters()
 		return m, tea.Quit
 
 	case commands.SetStatusMsg:
@@ -733,11 +639,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sysMsg := commands.SystemMsg(sysContent)
 		m.msgs = append(m.msgs, sysMsg)
 		m.scrollOffset = 0
-		client := m.client
+		a := m.activeAdapter()
 		store := m.store
 		return m, func() tea.Msg {
-			if client != nil {
-				_ = client.SendStatus(msg.Status)
+			if a != nil {
+				_ = a.SetStatus(msg.Status)
 			}
 			if store != nil {
 				_ = store.UpsertPresence(p)
@@ -758,7 +664,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case periodicRefreshMsg:
 		if m.historyLoaded && len(m.msgs) > 0 {
-			return m, tea.Batch(periodicRefreshCmd(), history.FetchNewerSince(m.fetcher, m.channel, m.msgs[len(m.msgs)-1].Timestamp))
+			return m, tea.Batch(periodicRefreshCmd(), m.fetchSinceCmd(m.channel, m.msgs[len(m.msgs)-1].Timestamp))
 		}
 		return m, periodicRefreshCmd()
 
@@ -836,7 +742,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+v":
-		if m.sender != nil && m.channel != "" {
+		if m.activeAdapter() != nil && m.channel != "" {
 			if path := readClipboardImage(); path != "" {
 				content := fmt.Sprintf("attached `%s`", filepath.Base(path))
 				return m.sendFileWithEcho(path, content)
@@ -844,15 +750,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "ctrl+c":
-		if m.client != nil {
-			_ = m.client.Close()
-		}
+		m.closeAdapters()
 		return m, tea.Quit
 
 	case "ctrl+q":
-		if m.client != nil {
-			_ = m.client.Close()
-		}
+		m.closeAdapters()
 		return m, tea.Quit
 
 	case "esc":
@@ -1203,7 +1105,7 @@ func (m *Model) loadOlderIfNeeded() tea.Cmd {
 		if m.scrollOffset >= len(m.msgs)-m.chatHeight() {
 			oldest := m.msgs[0].Timestamp
 			m.loadingHistory = true
-			return history.LoadOlder(m.fetcher, m.channel, oldest)
+			return m.loadOlderCmd(m.channel, oldest)
 		}
 	}
 	return nil
@@ -1555,11 +1457,11 @@ func (m Model) View() string {
 func (m Model) renderStatusBar() string {
 	connStr := string(m.status)
 	switch m.status {
-	case wsclient.StatusConnected:
+	case network.StateConnected:
 		connStr = "connected"
-	case wsclient.StatusDisconnected:
+	case network.StateDisconnected:
 		connStr = "disconnected"
-	case wsclient.StatusReconnecting:
+	case network.StateReconnecting:
 		connStr = "reconnecting"
 	}
 
@@ -2156,74 +2058,136 @@ func typingTickCmd() tea.Cmd {
 	})
 }
 
-func (m Model) listenMessages() tea.Cmd {
-	if m.client == nil {
+// listenNetwork blocks on one adapter's event stream and returns the next
+// event as a networkEventMsg. Exactly one of these is in flight per adapter;
+// the networkEventMsg handler re-arms it after processing.
+func (m Model) listenNetwork(id network.NetworkID) tea.Cmd {
+	adapter, ok := m.adapters[id]
+	if !ok || adapter == nil {
 		return nil
 	}
-	ch := m.client.Messages()
+	ch := adapter.Events()
 	return func() tea.Msg {
-		msg, ok := <-ch
+		ev, ok := <-ch
 		if !ok {
 			return nil
 		}
-		return wsMsg(msg)
+		return networkEventMsg(ev)
 	}
 }
 
-func (m Model) listenStatus() tea.Cmd {
-	if m.client == nil {
-		return nil
-	}
-	ch := m.client.StatusChanges()
-	return func() tea.Msg {
-		sc, ok := <-ch
-		if !ok {
-			return nil
+func (m Model) onMessageEvent(msg model.Message) (Model, []tea.Cmd) {
+	m.addChannel(msg.Channel)
+
+	if msg.EventType == "message_update" {
+		updated := msg
+		if applied := m.applyMessageUpdate(updated); applied != nil {
+			m.users = msgsToUsers(m.msgs)
+			updated = *applied
 		}
-		return wsStatusMsg{Status: sc.Status, Err: sc.Err}
+		return m, []tea.Cmd{m.persistMessageUpdate(updated)}
 	}
+
+	// Check for @mention — only notify if not from self and the channel
+	// isn't muted.
+	var notifCmd tea.Cmd
+	if !m.isSelfMessage(msg) && containsMentionExact(msg.Content, m.username) && !m.isChannelMuted(msg.Channel) {
+		n := model.Notification{
+			Channel:   msg.Channel,
+			Username:  msg.Username,
+			Content:   msg.Content,
+			Timestamp: msg.Timestamp,
+			MsgID:     msg.ID,
+		}
+		m.notifications = append(m.notifications, n)
+		notifCmd = m.persistNotification(n)
+		if m.bellOnMention() {
+			notifCmd = tea.Batch(notifCmd, bellCmd())
+		}
+	}
+
+	if msg.Channel != m.channel {
+		batch := []tea.Cmd{m.persistMessage(msg)}
+		if notifCmd != nil {
+			batch = append(batch, notifCmd)
+		}
+		return m, batch
+	}
+	// Try dedup with message's username and all known self aliases.
+	serverMsg := msg
+	if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
+		var reconciled bool
+		m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
+		if !reconciled {
+			m.msgs = insertSorted(m.msgs, serverMsg)
+		}
+		m.users = msgsToUsers(m.msgs)
+		return m, []tea.Cmd{m.persistMessage(serverMsg)}
+	}
+	// No sentHash match — still try to reconcile a local echo (e.g. file
+	// messages, which don't register sentHashes).
+	if m.isSelfMessage(msg) {
+		var reconciled bool
+		m.msgs, reconciled = reconcileLocalEcho(m.msgs, serverMsg)
+		if reconciled {
+			m.users = msgsToUsers(m.msgs)
+			return m, []tea.Cmd{m.persistMessage(serverMsg)}
+		}
+	}
+	m.msgs = insertSorted(m.msgs, msg)
+	if len(m.msgs) > 1000 {
+		m.msgs = m.msgs[len(m.msgs)-1000:]
+	}
+	m.users = msgsToUsers(m.msgs)
+	if m.scrollOffset > 0 {
+		m.unreadCount++
+	} else {
+		m.scrollOffset = 0
+	}
+	batch := []tea.Cmd{m.persistMessage(msg)}
+	if notifCmd != nil {
+		batch = append(batch, notifCmd)
+	}
+	return m, batch
 }
 
-func (m Model) listenTyping() tea.Cmd {
-	if m.client == nil {
-		return nil
+func (m Model) onStatusEvent(state network.ConnState, err error) (Model, []tea.Cmd) {
+	m.status = state
+	if err != nil {
+		m.addError(fmt.Sprintf("connection: %v", err))
 	}
-	ch := m.client.TypingEvents()
-	return func() tea.Msg {
-		te, ok := <-ch
-		if !ok {
-			return nil
+	if state == network.StateConnected {
+		m.errors = nil
+		if m.channel != "" {
+			return m, []tea.Cmd{m.subscribeCmd(m.channel)}
 		}
-		return typingEventMsg(te)
 	}
+	return m, nil
 }
 
-func (m Model) listenPresence() tea.Cmd {
-	if m.client == nil {
-		return nil
-	}
-	ch := m.client.Presences()
-	return func() tea.Msg {
-		p, ok := <-ch
-		if !ok {
-			return nil
+func (m Model) onTypingEvent(te model.TypingEvent) (Model, []tea.Cmd) {
+	m.addChannel(te.Channel)
+	if te.Channel == m.channel || te.Channel == "" {
+		if m.typingUsers == nil {
+			m.typingUsers = make(map[string]time.Time)
 		}
-		return presenceMsg(p)
+		m.typingUsers[te.Username] = time.Now()
 	}
+	return m, []tea.Cmd{typingTickCmd()}
 }
 
-func (m Model) listenTerminalUsers() tea.Cmd {
-	if m.client == nil {
-		return nil
+func (m Model) onPresenceEvent(p model.UserPresence) (Model, []tea.Cmd) {
+	m.presences[p.Username] = p
+	if m.store != nil {
+		store := m.store
+		go func() { _ = store.UpsertPresence(p) }()
 	}
-	ch := m.client.TerminalUsers()
-	return func() tea.Msg {
-		users, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return terminalUsersMsg(users)
-	}
+	return m, nil
+}
+
+func (m Model) onPresentUsers(users []string) (Model, []tea.Cmd) {
+	m.terminalOnline = users
+	return m, nil
 }
 
 func (m Model) loadLocalHistory(channel string, limit int) tea.Cmd {
@@ -2247,22 +2211,47 @@ func (m Model) loadLocalHistory(channel string, limit int) tea.Cmd {
 	}
 }
 
+// activeAdapter returns the network adapter backing the current channel.
+func (m Model) activeAdapter() network.Network {
+	return m.adapters[m.active]
+}
+
+// closeAdapters disconnects every adapter; used on quit and before a restart.
+func (m Model) closeAdapters() {
+	for _, a := range m.adapters {
+		if a != nil {
+			_ = a.Disconnect()
+		}
+	}
+}
+
+// ref builds a ChannelRef on the active network for a channel name. For the
+// relay, the channel name is also its native id.
+func (m Model) ref(channel string) network.ChannelRef {
+	return network.ChannelRef{Network: m.active, ID: channel, Name: channel}
+}
+
 func (m Model) subscribeCmd(channel string) tea.Cmd {
+	a := m.activeAdapter()
+	ref := m.ref(channel)
 	return func() tea.Msg {
-		if m.client != nil {
-			_ = m.client.Subscribe(channel)
+		if a != nil {
+			_ = a.Subscribe(ref)
 		}
 		return nil
 	}
 }
 
 func (m Model) subscribeSwitchCmd(oldChannel, newChannel string) tea.Cmd {
+	a := m.activeAdapter()
+	oldRef := m.ref(oldChannel)
+	newRef := m.ref(newChannel)
 	return func() tea.Msg {
-		if m.client != nil {
+		if a != nil {
 			if oldChannel != "" {
-				_ = m.client.Unsubscribe(oldChannel)
+				_ = a.Unsubscribe(oldRef)
 			}
-			_ = m.client.Subscribe(newChannel)
+			_ = a.Subscribe(newRef)
 		}
 		return nil
 	}
@@ -2557,24 +2546,105 @@ func (m Model) openImage(index int) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) SendMessage(content, channel, replyToID string) tea.Cmd {
-	if m.sender == nil {
+	a := m.activeAdapter()
+	if a == nil {
 		return nil
 	}
-	return m.sender.SendAsync(content, channel, replyToID)
+	ref := m.ref(channel)
+	return func() tea.Msg {
+		msgID, err := a.Send(context.Background(), ref, content, replyToID)
+		return webhook.SendResultMsg{Content: content, MessageID: msgID, Err: err}
+	}
 }
 
 func (m Model) SendFile(path, channel, content string) tea.Cmd {
-	if m.sender == nil {
+	a := m.activeAdapter()
+	if a == nil {
 		return nil
 	}
-	return m.sender.SendFileAsync(path, channel, content)
+	ref := m.ref(channel)
+	return func() tea.Msg {
+		msgID, err := a.SendFile(context.Background(), ref, path, content)
+		return webhook.SendFileResultMsg{Path: path, Content: content, MessageID: msgID, Err: err}
+	}
 }
 
 func (m Model) EditMessage(messageID, content string) tea.Cmd {
-	if m.sender == nil {
+	a := m.activeAdapter()
+	if a == nil {
 		return nil
 	}
-	return m.sender.EditAsync(messageID, m.channel, content)
+	ref := m.ref(m.channel)
+	return func() tea.Msg {
+		err := a.Edit(context.Background(), ref, messageID, content)
+		return webhook.EditResultMsg{MessageID: messageID, Content: content, Err: err}
+	}
+}
+
+// fetchHistoryCmd loads a page of history from the active adapter, returning a
+// history.FetchResultMsg so existing Update handlers stay unchanged.
+func (m Model) fetchHistoryCmd(channel string, limit int, before *time.Time) tea.Cmd {
+	a := m.activeAdapter()
+	if a == nil {
+		return nil
+	}
+	ref := m.ref(channel)
+	return func() tea.Msg {
+		msgs, err := a.FetchHistory(context.Background(), ref, limit, before)
+		return history.FetchResultMsg{Messages: msgs, Channel: channel, Err: err}
+	}
+}
+
+func (m Model) initialFetchCmd(channel string, limit int) tea.Cmd {
+	if limit <= 0 {
+		limit = 100
+	}
+	return m.fetchHistoryCmd(channel, limit, nil)
+}
+
+func (m Model) loadOlderCmd(channel string, oldest time.Time) tea.Cmd {
+	before := oldest
+	return m.fetchHistoryCmd(channel, 100, &before)
+}
+
+// fetchChannelsCmd lists channels on the active adapter, returning the existing
+// history.ChannelsResultMsg type.
+func (m Model) fetchChannelsCmd() tea.Cmd {
+	a := m.activeAdapter()
+	if a == nil {
+		return nil
+	}
+	server := ""
+	return func() tea.Msg {
+		refs, err := a.ListChannels(context.Background(), server)
+		if err != nil {
+			return history.ChannelsResultMsg{Err: err}
+		}
+		names := make([]string, 0, len(refs))
+		for _, r := range refs {
+			names = append(names, r.Name)
+		}
+		return history.ChannelsResultMsg{Channels: names}
+	}
+}
+
+// fetchSinceCmd polls for messages newer than `since`. Only adapters that
+// implement network.SinceFetcher (the relay) support catch-up polling; others
+// rely on their live event stream, so this is a no-op for them.
+func (m Model) fetchSinceCmd(channel string, since time.Time) tea.Cmd {
+	a := m.activeAdapter()
+	sf, ok := a.(network.SinceFetcher)
+	if !ok {
+		return nil
+	}
+	ref := m.ref(channel)
+	return func() tea.Msg {
+		msgs, err := sf.FetchSince(context.Background(), ref, since)
+		if err != nil {
+			return history.FetchResultMsg{Channel: channel, Err: err}
+		}
+		return history.FetchResultMsg{Messages: msgs, Channel: channel}
+	}
 }
 
 func (m Model) persistMessage(msg model.Message) tea.Cmd {
@@ -2995,8 +3065,8 @@ func contentHash(username, channel, content string) string {
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// isSelfMessage returns true if the incoming wsMsg was sent by the local user.
-func (m *Model) isSelfMessage(msg wsMsg) bool {
+// isSelfMessage returns true if the incoming message was sent by the local user.
+func (m *Model) isSelfMessage(msg model.Message) bool {
 	if m.discordID != "" && msg.UserID != "" {
 		return msg.UserID == m.discordID
 	}
