@@ -80,7 +80,58 @@ func New(dbPath string) (*Store, error) {
 		}
 	}
 
+	if err := migrateFTS(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	return &Store{db: db}, nil
+}
+
+// migrateFTS sets up the FTS5 full-text index over message content. It uses an
+// external-content table (the index stores no copy of the text, only the
+// inverted index) kept in sync with `messages` via triggers. On a database
+// that predates the index, the existing rows are backfilled once via 'rebuild'.
+func migrateFTS(db *sql.DB) error {
+	stmts := []string{
+		`CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+			content,
+			content='messages',
+			content_rowid='rowid'
+		)`,
+		`CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+			INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+			INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+			INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+		END`,
+		// The FTS index supersedes the plain content index used by the old
+		// LIKE search; drop it to save write overhead.
+		`DROP INDEX IF EXISTS idx_messages_content`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("creating FTS index: %w", err)
+		}
+	}
+
+	var msgCount, ftsCount int
+	if err := db.QueryRow(`SELECT count(*) FROM messages`).Scan(&msgCount); err != nil {
+		return fmt.Errorf("counting messages: %w", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM messages_fts`).Scan(&ftsCount); err != nil {
+		return fmt.Errorf("counting FTS rows: %w", err)
+	}
+	if msgCount != ftsCount {
+		if _, err := db.Exec(`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')`); err != nil {
+			return fmt.Errorf("backfilling FTS index: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) InsertMessage(msg model.Message) error {
@@ -129,6 +180,60 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 	if err != nil {
 		return nil, fmt.Errorf("querying messages: %w", err)
 	}
+	return scanMessages(rows)
+}
+
+// SearchMessages runs a full-text search over message content using the FTS5
+// index, ranked newest-first and capped at 100 hits. The query is tokenized
+// and each term is prefix-matched (so "depl" finds "deploy"). If the FTS query
+// is rejected (e.g. it tokenizes to nothing) it falls back to a LIKE scan so
+// search never hard-fails on odd input.
+func (s *Store) SearchMessages(query string) ([]model.Message, error) {
+	if match := buildFTSMatch(query); match != "" {
+		rows, err := s.db.Query(
+			`SELECT m.id, m.username, m.content, m.channel, m.timestamp, m.attachments_json, m.editable
+			 FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
+			 WHERE f MATCH ? ORDER BY m.timestamp DESC LIMIT 100`,
+			match,
+		)
+		if err == nil {
+			if msgs, scanErr := scanMessages(rows); scanErr == nil {
+				return msgs, nil
+			}
+		}
+		// Fall through to LIKE on any FTS error.
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, username, content, channel, timestamp, attachments_json, editable FROM messages WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 100`,
+		"%"+query+"%",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("searching messages: %w", err)
+	}
+	return scanMessages(rows)
+}
+
+// buildFTSMatch turns a free-text query into an FTS5 MATCH expression: each
+// whitespace-separated term becomes a quoted, prefix-matched token ANDed
+// together. Embedded double quotes are escaped by doubling. Returns "" when
+// the query has no terms.
+func buildFTSMatch(query string) string {
+	fields := strings.Fields(query)
+	if len(fields) == 0 {
+		return ""
+	}
+	terms := make([]string, 0, len(fields))
+	for _, f := range fields {
+		escaped := strings.ReplaceAll(f, `"`, `""`)
+		terms = append(terms, `"`+escaped+`"*`)
+	}
+	return strings.Join(terms, " ")
+}
+
+// scanMessages reads message rows selecting the standard column set and closes
+// the rows when done.
+func scanMessages(rows *sql.Rows) ([]model.Message, error) {
 	defer rows.Close()
 
 	var msgs []model.Message
@@ -146,36 +251,6 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating message rows: %w", err)
 	}
-
-	return msgs, nil
-}
-
-func (s *Store) SearchMessages(query string) ([]model.Message, error) {
-	rows, err := s.db.Query(
-		`SELECT id, username, content, channel, timestamp, attachments_json, editable FROM messages WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 100`,
-		"%"+query+"%",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("searching messages: %w", err)
-	}
-	defer rows.Close()
-
-	var msgs []model.Message
-	for rows.Next() {
-		var m model.Message
-		var attJSON string
-		var editable int
-		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON, &editable); err != nil {
-			return nil, fmt.Errorf("scanning search result row: %w", err)
-		}
-		m.Attachments = unmarshalAttachments(attJSON)
-		m.Editable = editable == 1
-		msgs = append(msgs, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating search result rows: %w", err)
-	}
-
 	return msgs, nil
 }
 

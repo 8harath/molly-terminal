@@ -346,9 +346,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(batch...)
 		}
 
-		// Check for @mention — only notify if not from self
+		// Check for @mention — only notify if not from self and the channel
+		// isn't muted.
 		var notifCmd tea.Cmd
-		if !m.isSelfMessage(msg) && containsMentionExact(msg.Content, m.username) {
+		if !m.isSelfMessage(msg) && containsMentionExact(msg.Content, m.username) && !m.isChannelMuted(msg.Channel) {
 			n := model.Notification{
 				Channel:   msg.Channel,
 				Username:  msg.Username,
@@ -358,6 +359,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.notifications = append(m.notifications, n)
 			notifCmd = m.persistNotification(n)
+			if m.bellOnMention() {
+				notifCmd = tea.Batch(notifCmd, bellCmd())
+			}
 		}
 
 		if msg.Channel != m.channel {
@@ -3049,6 +3053,34 @@ func containsMentionExact(content, username string) bool {
 
 func isWordRune(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+}
+
+// isChannelMuted reports whether mention notifications are suppressed for the
+// given channel per [notifications].muted_channels (case-insensitive).
+func (m *Model) isChannelMuted(channel string) bool {
+	if m.setupCfg == nil {
+		return false
+	}
+	for _, c := range m.setupCfg.Notifications.MutedChannels {
+		if strings.EqualFold(c, channel) {
+			return true
+		}
+	}
+	return false
+}
+
+// bellOnMention reports whether the terminal bell should fire on a mention.
+func (m *Model) bellOnMention() bool {
+	return m.setupCfg != nil && m.setupCfg.Notifications.BellOnMention
+}
+
+// bellCmd writes the BEL control character to the terminal, triggering the
+// emulator's audible/visual bell without disturbing the rendered frame.
+func bellCmd() tea.Cmd {
+	return func() tea.Msg {
+		fmt.Fprint(os.Stderr, "\a")
+		return nil
+	}
 }
 
 // periodicRefreshCmd schedules a periodic history refresh every 30 seconds.
