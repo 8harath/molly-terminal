@@ -11,6 +11,7 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/model"
+	"github.com/ploglabs/molly-terminal/internal/network"
 )
 
 func msg(id string, ts time.Time) model.Message {
@@ -289,7 +290,7 @@ func TestMergeMessagesKeepsDifferentRealMessagesWithSameContent(t *testing.T) {
 
 func TestSentWebsocketMessageReplacesLocalEcho(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "terminal-user", "", "discord-user", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "terminal-user", "", "discord-user", "", "test-guild", nil, "", "", "", nil, "")
 	m.sentHashes[contentHash("terminal-user", "general", "hello")] = time.Now()
 	m.msgs = []model.Message{{
 		ID:        "echo-123",
@@ -299,13 +300,13 @@ func TestSentWebsocketMessageReplacesLocalEcho(t *testing.T) {
 		Timestamp: base,
 	}}
 
-	updatedModel, _ := m.Update(wsMsg{
+	updatedModel, _ := m.Update(networkEventMsg{Network: "discord", Kind: network.EventMessage, Message: &model.Message{
 		ID:        "discord-123",
 		Username:  "discord-user",
 		Content:   "hello",
 		Channel:   "general",
 		Timestamp: base.Add(time.Second),
-	})
+	}})
 	updated := updatedModel.(Model)
 	if len(updated.msgs) != 1 {
 		t.Fatalf("expected websocket self-message to replace echo, got %d messages", len(updated.msgs))
@@ -345,7 +346,7 @@ func assertStoredMessageIDs(t *testing.T, store *db.Store, expected []string) {
 
 func TestViewFitsWindowWithSidebarsAndMultilineInput(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	m.width = 120
 	m.height = 30
 	m.channels = []string{"general", "backend", "frontend", "ops", "random"}
@@ -377,7 +378,7 @@ func TestViewFitsWindowWithSidebarsAndMultilineInput(t *testing.T) {
 }
 
 func TestViewFitsSmallWindow(t *testing.T) {
-	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	m.width = 40
 	m.height = 12
 	m.input.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")
@@ -387,7 +388,7 @@ func TestViewFitsSmallWindow(t *testing.T) {
 
 func TestStartEditLastPrefillsInput(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	m.msgs = []model.Message{
 		{ID: "1", Username: "alice", Content: "a", Channel: "general", Timestamp: base},
 		{ID: "2", Username: "me", Content: "first", Channel: "general", Timestamp: base.Add(time.Minute), Editable: true},
@@ -409,7 +410,7 @@ func TestStartEditLastPrefillsInput(t *testing.T) {
 
 func TestStartEditPickerSelectsOwnMessages(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	m.msgs = []model.Message{
 		{ID: "1", Username: "alice", Content: "a", Channel: "general", Timestamp: base},
 		{ID: "2", Username: "me", Content: "first", Channel: "general", Timestamp: base.Add(time.Minute), Editable: true},
@@ -453,7 +454,7 @@ func TestChannelsResultMsgReplacesStaleSelectedChannel(t *testing.T) {
 		t.Fatalf("InsertChannel general: %v", err)
 	}
 
-	m := New(nil, nil, store, nil, nil, "deleted", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", store, nil, "deleted", "me", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	updated, cmd := m.Update(history.ChannelsResultMsg{Channels: []string{"general", "dev"}})
 	got := updated.(Model)
 
@@ -509,7 +510,7 @@ func TestInsertSortedNoDuplicateWhenTimestampEarlierThanLaterMessages(t *testing
 // reconcile (replace) the file-echo rather than inserting a duplicate.
 func TestFileEchoReconciledBySelfMessagePath(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "terminal-user", "discord-id-123", "discord-user", "Discord User", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "terminal-user", "discord-id-123", "discord-user", "Discord User", "test-guild", nil, "", "", "", nil, "")
 
 	// Simulate what sendFileWithEcho does: echo added, no sentHash registered.
 	m.msgs = []model.Message{{
@@ -522,14 +523,14 @@ func TestFileEchoReconciledBySelfMessagePath(t *testing.T) {
 	// sentHashes is intentionally empty (no hash for file echoes).
 
 	// Relay broadcasts back with real ID and same username.
-	updatedModel, _ := m.Update(wsMsg{
+	updatedModel, _ := m.Update(networkEventMsg{Network: "discord", Kind: network.EventMessage, Message: &model.Message{
 		ID:        "discord-file-456",
 		Username:  "terminal-user",
 		UserID:    "discord-id-123",
 		Content:   "here is a file",
 		Channel:   "general",
 		Timestamp: base.Add(time.Second),
-	})
+	}})
 	updated := updatedModel.(Model)
 	if len(updated.msgs) != 1 {
 		t.Fatalf("file echo not reconciled: got %d messages (want 1)", len(updated.msgs))
@@ -543,7 +544,7 @@ func TestFileEchoReconciledBySelfMessagePath(t *testing.T) {
 // matches the incoming username only case-insensitively (alias stored with
 // exact case that differs from incoming).
 func TestDeduplicateSentMessageCaseMismatch(t *testing.T) {
-	m := New(nil, nil, nil, nil, nil, "general", "Alice", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "Alice", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	m.sentHashes[contentHash("Alice", "general", "hello")] = time.Now()
 
 	// Relay broadcasts with lowercase username — EqualFold would skip "Alice".
@@ -560,7 +561,7 @@ func TestDeduplicateSentMessageCaseMismatch(t *testing.T) {
 // case-different username — must not duplicate.
 func TestNoDuplicateWhenUpgradedEchoAndCaseMismatch(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "Alice", "", "", "", "test-guild", nil, "", "", "", nil, "")
+	m := New(nil, "", nil, nil, "general", "Alice", "", "", "", "test-guild", nil, "", "", "", nil, "")
 	m.sentHashes[contentHash("Alice", "general", "hello")] = time.Now()
 
 	// upgradeEchoID already ran: echo-XXX → real-id.
@@ -569,13 +570,13 @@ func TestNoDuplicateWhenUpgradedEchoAndCaseMismatch(t *testing.T) {
 		{ID: "real-id", Username: "Alice", Content: "hello", Channel: "general", Timestamp: base.Add(2 * time.Second)},
 	}
 
-	updatedModel, _ := m.Update(wsMsg{
+	updatedModel, _ := m.Update(networkEventMsg{Network: "discord", Kind: network.EventMessage, Message: &model.Message{
 		ID:        "real-id",
 		Username:  "alice",
 		Content:   "hello",
 		Channel:   "general",
 		Timestamp: base, // earlier than "other" — triggers old insertSorted bug
-	})
+	}})
 	updated := updatedModel.(Model)
 	if len(updated.msgs) != 2 {
 		t.Fatalf("got %d messages after wsMsg (want 2)", len(updated.msgs))
