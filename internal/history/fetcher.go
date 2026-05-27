@@ -190,6 +190,39 @@ func LoadOlder(f *Fetcher, channel string, oldestTimestamp time.Time) tea.Cmd {
 	return f.FetchAsync(channel, defaultLimit, &before)
 }
 
+// FetchSinceMessages fetches messages newer than `since` and returns them
+// directly (the network adapter wraps this for its catch-up polling).
+func (f *Fetcher) FetchSinceMessages(channel string, since time.Time) ([]model.Message, error) {
+	if f.baseURL == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("%s/api/channels/%s/messages?since=%s&limit=50",
+		f.baseURL, channel, since.UTC().Format(time.RFC3339Nano))
+	if f.guildID != "" {
+		url += fmt.Sprintf("&guild_id=%s", f.guildID)
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if f.apiKey != "" {
+		req.Header.Set("X-API-Key", f.apiKey)
+	}
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	var msgs []model.Message
+	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}
+
 func (f *Fetcher) FetchSince(channel string, since time.Time) tea.Cmd {
 	return func() tea.Msg {
 		if f.baseURL == "" {
