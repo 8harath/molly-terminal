@@ -16,11 +16,11 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/config"
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/guilds"
-	"github.com/ploglabs/molly-terminal/internal/history"
+	"github.com/ploglabs/molly-terminal/internal/network"
+	"github.com/ploglabs/molly-terminal/internal/network/discordrelay"
+	"github.com/ploglabs/molly-terminal/internal/network/matrix"
 	"github.com/ploglabs/molly-terminal/internal/setup"
 	"github.com/ploglabs/molly-terminal/internal/tui"
-	"github.com/ploglabs/molly-terminal/internal/webhook"
-	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
 var version = "dev"
@@ -151,21 +151,27 @@ func main() {
 	}
 	defer store.Close()
 
-	client := wsclient.New(cfg.Server.WebsocketURL, cfg.General.Username, cfg.General.Channel, cfg.Server.APIKey)
-	sender := webhook.New(cfg.Server.WebhookURL, cfg.Server.RelayURL, cfg.Server.APIKey, cfg.General.Username, cfg.General.DiscordAvatarURL, cfg.General.GuildID)
-	fetcher := history.New(cfg.Server.RelayURL, cfg.Server.APIKey)
-	if cfg.General.GuildID != "" {
-		fetcher = fetcher.WithGuild(cfg.General.GuildID)
+	disc := discordrelay.New(cfg)
+	adapters := []network.Network{disc}
+	for _, n := range cfg.EnabledNetworks() {
+		if n.Type == "matrix" {
+			statePath, _ := config.NetworkStatePath(n.ID, "sync")
+			adapters = append(adapters, matrix.New(n, statePath))
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go client.ConnectWithRetry(ctx)
+	for _, a := range adapters {
+		if err := a.Connect(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "%s %s: %v\n", cAccent("!"), a.ID(), err)
+		}
+	}
 
 	registry := commands.NewRegistry()
 	registry.Register(commands.NewHelpCmd(registry))
-	registry.Register(commands.NewJoinCmd(client, fetcher, store))
+	registry.Register(commands.NewJoinCmd())
 	registry.Register(commands.NewHistoryCmd())
 	registry.Register(commands.NewSearchCmd(store))
 	registry.Register(commands.NewQuitCmd())
@@ -184,7 +190,7 @@ func main() {
 	tui.InitImageProtocol(cfg.UI.ImageProtocol)
 	tui.ApplyTheme(cfg.UI.Theme)
 
-	model := tui.New(client, sender, store, fetcher, registry,
+	model := tui.New(adapters, disc.ID(), store, registry,
 		cfg.General.Channel, cfg.General.Username, cfg.General.DiscordID,
 		cfg.General.DiscordUsername, cfg.General.DiscordGlobalName, cfg.General.GuildName,
 		cfg.ConfiguredGuilds,
@@ -201,7 +207,7 @@ func main() {
 
 	go func() {
 		<-sigCh
-		_ = client.Close()
+		_ = disc.Disconnect()
 		cancel()
 		p.Quit()
 	}()
