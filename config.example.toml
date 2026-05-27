@@ -127,3 +127,18 @@ bell_on_mention = false
 # Channels for which mention notifications (and the bell) are suppressed.
 # Case-insensitive. Example: muted_channels = ["bots", "ci-spam"]
 muted_channels = []
+
+# ── Additional networks (experimental) ─────────────────────────────────────
+# Molly speaks to multiple chat networks behind one TUI. Discord (above) is
+# implicit. Add other networks as [[networks]] entries. Secrets are stored in
+# the OS keyring (service "molly-<id>"), never in this file.
+#
+# Matrix connects DIRECTLY to your homeserver (no relay). On first run, set
+# MOLLY_MATRIX_PASSWORD to log in; the token is then cached in the keyring.
+#
+# [[networks]]
+# id         = "matrix"
+# type       = "matrix"
+# enabled    = true
+# homeserver = "https://matrix.org"
+# user_id    = "@you:matrix.org"   # non-secret; the access token lives in the keyring

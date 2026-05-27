@@ -108,6 +108,46 @@ molly is a client; every endpoint is configurable.
 - **Override web setup** — set `server.web_setup_url` (or use terminal setup) so
   no token is sent to the public web wizard.
 
+## Multi-network architecture
+
+molly is not Discord-only. Internally it talks to a pluggable **`Network`
+adapter** (`internal/network`); the TUI consumes a unified event stream and
+never sees protocol-specific wire formats. Two adapter styles exist:
+
+- **Relay-backed** (`internal/network/discordrelay`) — wraps the WebSocket +
+  webhook + history clients described above. Required for Discord because
+  Discord forbids self-bots; the relay holds the gateway connection.
+- **Direct** (`internal/network/matrix`) — connects straight from molly to the
+  network with no relay and no third party storing plaintext. Matrix uses the
+  client-server API (mautrix-go); the access token is stored in the OS keyring
+  (`molly-matrix`), and `/sync` state is cached locally for fast restarts.
+
+Each adapter exposes the same interface: connect, list servers/channels,
+subscribe, fetch history, send/file/edit, and a single `Events()` channel of
+messages/typing/presence/status. The TUI runs one listener per adapter and
+fans them into one ordered update loop, tagging every event with its origin
+`NetworkID`. Credentials are namespaced per network in the keyring; local
+history is isolated per `(network, server)` on disk.
+
+### Network-neutral relay contract
+
+For relay-backed networks the relay is a **router** in front of per-backend
+adapters. The client↔relay contract is already protocol-neutral and stays so:
+
+- **Events** use generic types — `message_create`, `message_update`, `typing`,
+  `status_update` — with opaque string IDs and format-agnostic attachments.
+- **Channel identity on the wire** is network-qualified for multi-backend
+  relays: `discord:general`, `slack:C0123`. Single-network relays may omit the
+  prefix (back-compatible).
+- **REST** endpoints (`/message`, `/file`, `PATCH /message/:id`, history,
+  channel/server listing) accept a neutral `server_id` alias alongside the
+  legacy `guild_id`.
+- A backend (Discord bot, Slack socket-mode app) translates its native events
+  into the neutral event types; **no client change is needed** to add one.
+
+The relay server lives in a separate repo (`ploglabs/molly-discord-relay`);
+this contract is the spec a multi-backend relay implements.
+
 ## Summary
 
 molly trades a direct gateway connection for a bot-based relay specifically to
@@ -115,4 +155,5 @@ keep your Discord account ToS-compliant and setup friction-free. Your tokens and
 permissions stay local (the web-setup path being the one exception to call out);
 message content and metadata transit the relay. If that centralization is not
 acceptable for your threat model, the relay, webhook, OAuth app, and web-setup
-host are all replaceable with infrastructure you control.
+host are all replaceable with infrastructure you control. Networks that permit
+direct client connections (Matrix today) bypass the relay entirely.
