@@ -124,6 +124,14 @@ make build          # → bin/molly
 
 Requires [Go](https://go.dev) 1.21+.
 
+## Privacy & architecture
+
+molly uses a server-side bot + relay rather than connecting to Discord's gateway
+as your account (which would be self-botting and against Discord's ToS). Your
+OAuth tokens and permissions stay local; message content and metadata transit
+the relay. For the full data-flow breakdown — and the one setup path that is the
+exception — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Self-hosting
 
 To point molly at your own Discord app, webhook, or relay instead of the hosted
