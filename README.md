@@ -124,6 +124,11 @@ make build          # → bin/molly
 
 Requires [Go](https://go.dev) 1.21+.
 
+## Self-hosting
+
+To point molly at your own Discord app, webhook, or relay instead of the hosted
+defaults, see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+
 ## License
 
 [Apache License 2.0](LICENSE)
