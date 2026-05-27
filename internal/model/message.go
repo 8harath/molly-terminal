@@ -13,6 +13,7 @@ type Attachment struct {
 }
 
 type Message struct {
+	Network        string       `json:"network,omitempty"`
 	EventType      string       `json:"type,omitempty"`
 	ID             string       `json:"id"`
 	Username       string       `json:"username"`
